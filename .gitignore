@@ -1,0 +1,60 @@
+# ========================
+# Claude Code 配置文件
+# ========================
+claude.md
+CLAUDE.md    # 大写版本也忽略，以防万一
+
+# ========================
+# 依赖 (Dependencies)
+# ========================
+node_modules/
+package-lock.json   # 如果用 yarn 管理，可以忽略这个
+yarn.lock           # 如果用 npm 管理，可以忽略这个
+
+# ========================
+# 构建产物 (Build Output)
+# ========================
+dist/
+build/
+*.zip               # 打包好的 extension zip
+
+# ========================
+# 环境变量 (Environment Variables)
+# — 绝对不能上传到 GitHub！
+# ========================
+.env
+.env.local
+.env.*.local
+
+# ========================
+# 编辑器配置 (Editor Config)
+# ========================
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ========================
+# 操作系统文件 (OS Files)
+# ========================
+.DS_Store           # macOS
+Thumbs.db           # Windows
+Desktop.ini
+
+# ========================
+# 日志文件 (Logs)
+# ========================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ========================
+# 临时文件 (Temp Files)
+# ========================
+*.tmp
+*.temp
+.cache/

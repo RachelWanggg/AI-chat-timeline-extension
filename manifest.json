@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "AI Chat Timeline",
+  "version": "0.1.0",
+  "description": "Adds structured timeline navigation to AI chat interfaces.",
+
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "activeTab"
+  ],
+
+  "action": {
+    "default_title": "Open AI Timeline"
+  },
+
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
