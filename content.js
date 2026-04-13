@@ -25,6 +25,54 @@ function smartTruncate(text, maxLength) {
   return truncated + "…";
 }
 
+// ── 发送消息给插件侧添加 prompt ──
+function addPromptFromContent(title, text) {
+  chrome.runtime.sendMessage({
+    type: "ADD_PROMPT_FROM_CONTENT",
+    title,
+    text
+  });
+}
+
+// ── 给消息框动态添加 "Save to Prompt Library" 按钮 ──
+function injectSaveButtons() {
+  // 用户消息
+  const userMessages = document.querySelectorAll('div[data-testid="user-message"],[data-message-author-role="user"]');
+
+  userMessages.forEach((msg) => {
+    if (msg.querySelector(".tl-save-prompt-btn")) return; // 已注入过，跳过
+
+    const btn = document.createElement('button');
+    btn.className = 'tl-save-prompt-btn';
+    btn.textContent = 'Save to Prompt Library';
+    btn.style.cssText = `
+      background: #5b9cf6;
+      color: black;
+      border: none;
+      padding: 4px 8px;
+      margin-top: 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      opacity: 0.7;
+      display: block;
+      transition: opacity 0.2s;
+    `;
+    btn.onmouseover = () => btn.style.opacity = '1';
+    btn.onmouseout = () => btn.style.opacity = '0.7';
+
+    btn.onclick = () => {
+      const text = msg.innerText || msg.textContent;
+      const title = `Saved from ${window.location.host} at ${new Date().toLocaleTimeString()}`;
+      addPromptFromContent(title, text);
+      btn.textContent = '✅ Saved!';
+      setTimeout(() => btn.textContent = 'Save to Prompt Library', 2000);
+    };
+
+    msg.appendChild(btn);
+  });
+}
+
 // ── 防抖工具函数（debounce）
 // 在 interview 中：debounce delays execution until activity stops
 function debounce(fn, delay) {
@@ -190,6 +238,9 @@ function parseClaude() {
 // ── Claude.ai 专用 MutationObserver
 function startClaudeObserver() {
   const debouncedParse = debounce(() => {
+    // 注入保存按钮
+    injectSaveButtons();
+
     const parsed = parseClaude();
     const timelineData = buildTimelineData(parsed);
     console.log("[Timeline] Claude updated:", timelineData.length, "turns");
@@ -329,33 +380,36 @@ function startAnchorObserver() {
         );
       }
 
-     chrome.runtime.sendMessage({
+      chrome.runtime.sendMessage({
         type: "ANCHOR_VISIBLE",
         anchorId: target.target.id,
-      }).catch(() => {});
+      }).catch(() => { });
     },
     { threshold: 0, rootMargin: "-10% 0px -10% 0px" }
   );
 
   // 观察所有已打上 tl- id 的元素
   document.querySelectorAll('[id^="tl-"]').forEach((el) => observer.observe(el));
-  
+
   // reobserveAll：新 anchor 出现后重新注册
   observer.reobserveAll = () => {
     observer.disconnect();
     document.querySelectorAll('[id^="tl-"]').forEach(el => observer.observe(el));
   };
-  
+
   return observer;
 }
 
 // ── 核心：解析 + 发送 + 更新 anchor 观察
 function parseAndSend(adapter) {
+  // 注入保存按钮
+  injectSaveButtons();
+
   const parsed = parseConversation(adapter);
   const timelineData = buildTimelineData(parsed);
   console.log("[Timeline] Updated:", timelineData.length, "turns");
   sendTimelineToPanel(timelineData);
-  
+
   // 重新观察所有 anchor（包括新增的）
   if (currentAnchorObserver) {
     currentAnchorObserver.reobserveAll();
@@ -409,6 +463,10 @@ chrome.runtime.onMessage.addListener((message) => {
       console.warn("[Timeline] Anchor not found:", message.anchorId);
     }
   }
+  else if (message.type === "REPARSE_NOW") {
+    console.log("[Timeline] Received REPARSE_NOW, re-running main()");
+    main();
+  }
 });
 
 // ── 追踪当前的 MutationObserver（防止 URL 变化后重复启动）
@@ -418,6 +476,8 @@ let currentAnchorObserver = null; // 当前 IntersectionObserver
 
 // ── 主函数
 function main() {
+  anchorCounter = 0;
+  
   // 先 disconnect 旧的 observer，防止重复监听
   if (currentObserver) {
     currentObserver.disconnect();
@@ -433,8 +493,8 @@ function main() {
     const parsed = parseClaude();
     const timelineData = buildTimelineData(parsed);
     sendTimelineToPanel(timelineData);
-    currentObserver = startClaudeObserver(); 
-    currentAnchorObserver = startAnchorObserver(); 
+    currentObserver = startClaudeObserver();
+    currentAnchorObserver = startAnchorObserver();
     return;
   }
 
@@ -444,6 +504,9 @@ function main() {
     console.log("[Timeline] No adapter for this site:", window.location.hostname);
     return;
   }
+  // ✅ 立即解析一次，不等 DOM 变化
+  parseAndSend(adapter);
+
   currentObserver = startObserver(adapter);
   currentAnchorObserver = startAnchorObserver();
 }
@@ -458,7 +521,7 @@ setInterval(() => {
     console.log("[Timeline] URL changed, reloading timeline...");
 
     // 先通知 side panel 清空显示
-    chrome.runtime.sendMessage({ type: "TIMELINE_CLEAR" }).catch(() => {});
+    chrome.runtime.sendMessage({ type: "TIMELINE_CLEAR" }).catch(() => { });
 
     // 等 2000ms 让 SPA 重新渲染 DOM，再重新解析
     setTimeout(main, 2000);

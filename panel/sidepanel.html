@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Timeline</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+
+<body>
+
+  <div id="app">
+    <!-- 标题栏 (header) -->
+    <header class="panel-header">
+      <span class="panel-icon">⏱</span>
+      <span class="panel-title">Timeline</span>
+      <div class="header-actions">
+        <button id="prompt-library-btn" class="header-action-btn" title="Prompt Library">Prompt Library 📚</button>
+        <button id="settings-btn" class="header-action-btn" title="Settings">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Settings Overlay -->
+    <div id="settings-overlay" class="settings-overlay hidden">
+      <div class="settings-panel">
+        <div class="settings-header">
+          <span>Settings</span>
+          <button id="close-settings" class="close-btn">✕</button>
+        </div>
+        <div class="settings-row">
+          <label>Theme Mode</label>
+          <select id="theme-select">
+            <option value="system">System</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <!-- Pinned anchors 区域，默认隐藏 -->
+    <div id="pinned-section" class="pinned-section hidden">
+      <div class="pinned-header">📌 Pinned</div>
+      <div id="pinned-list"></div>
+      <hr class="pinned-divider" />
+    </div>
+
+    <!-- 时间线主体 (timeline container) -->
+    <main class="timeline-container" id="timeline-root">
+      <!-- 由 sidepanel.js 动态渲染 -->
+    </main>
+
+    <!-- Prompt Library Modal (Pop-up on middle of screen) -->
+    <div id="prompt-drawer" class="prompt-drawer hidden">
+      <div class="prompt-modal-container" id="prompt-modal">
+        <div class="prompt-drawer-header" id="prompt-modal-header">
+          <span class="prompt-drawer-title">📚 Prompt Library</span>
+          <div class="modal-controls">
+            <button id="close-prompt-drawer" class="close-btn" title="Close">✕</button>
+          </div>
+        </div>
+        <div class="prompt-drawer-content">
+          <!-- New Prompt Form -->
+          <div class="prompt-form">
+            <input 
+              type="text" 
+              id="prompt-title-input" 
+              class="prompt-title-input" 
+              placeholder="Prompt title (e.g., Code Review)" 
+              maxlength="50"
+            />
+            <select id="prompt-category-select" class="prompt-category-select">
+              <option value="">Select a category...</option>
+              <option value="Writing">Writing</option>
+              <option value="Coding">Coding</option>
+              <option value="Analysis">Analysis</option>
+              <option value="Brainstorm">Brainstorm</option>
+              <option value="Documentation">Documentation</option>
+              <option value="Other">Other</option>
+            </select>
+            <input 
+              type="text" 
+              id="prompt-tags-input" 
+              class="prompt-tags-input" 
+              placeholder="Add tags (comma-separated: e.g., ai, coding, review)"
+            />
+            <textarea 
+              id="prompt-textarea" 
+              class="prompt-textarea" 
+              placeholder="Enter your prompt template here..."
+              rows="5"
+            ></textarea>
+            <button id="save-prompt-btn" class="save-btn">Save Prompt</button>
+          </div>
+
+          <!-- Divider -->
+          <hr class="prompt-divider" />
+
+          <!-- Search Bar -->
+          <input 
+            type="text" 
+            id="prompt-search-input" 
+            class="prompt-search-input" 
+            placeholder="Search by name or tags..."
+          />
+
+          <!-- Saved Prompts List -->
+          <div class="prompt-list-header">Saved Prompts</div>
+          <div id="prompt-list" class="prompt-list">
+            <!-- Rendered by renderPromptList() -->
+          </div>
+        </div>
+        <!-- Resize handle -->
+        <div class="modal-resize-handle"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+
+</html>
