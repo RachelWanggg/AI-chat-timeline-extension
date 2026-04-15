@@ -4,11 +4,19 @@
   "version": "0.1.0",
   "description": "Adds structured timeline navigation to AI chat interfaces.",
 
+  "icons": {
+    "128": "icons/icon.jpeg"
+  },
+
   "permissions": [
     "sidePanel",
     "tabs",
     "activeTab",
     "storage"
+  ],
+
+  "host_permissions": [
+    "https://api.anthropic.com/*"
   ],
 
   "action": {

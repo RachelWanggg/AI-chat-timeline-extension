@@ -36,6 +36,38 @@
             <option value="light">Light</option>
           </select>
         </div>
+
+        <hr class="settings-divider" />
+        <div class="settings-section-title">Revise Settings</div>
+
+        <div class="settings-row">
+          <label>Revise Mode</label>
+          <select id="revise-mode-select" class="settings-select">
+            <option value="free">Free Mode (uses ChatGPT)</option>
+            <option value="pro">Pro Mode (Anthropic API)</option>
+          </select>
+        </div>
+        <div class="settings-hint">
+          💡 Free Mode currently works on ChatGPT only.
+          Pro Mode works on both ChatGPT and Claude.ai.
+        </div>
+
+        <div id="pro-mode-fields">
+          <div class="settings-row">
+            <label>Anthropic API Key</label>
+            <input type="password" id="anthropic-key-input" class="settings-input" placeholder="sk-ant-..." />
+          </div>
+          <div class="settings-row">
+            <label>Model</label>
+            <select id="anthropic-model-select" class="settings-select">
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 (Fast &amp; Cheap)</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Balanced)</option>
+              <option value="claude-opus-4-6">Claude Opus 4.6 (Best Quality)</option>
+            </select>
+          </div>
+          <button id="save-revise-config-btn" class="settings-save-btn">Save</button>
+          <div id="revise-config-status" class="settings-status"></div>
+        </div>
       </div>
     </div>
     <!-- Pinned anchors 区域，默认隐藏 -->

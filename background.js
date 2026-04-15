@@ -52,3 +52,61 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
 });
+
+// ── Pro Mode: 直接调用 Anthropic API（不受内容页 CSP 限制）
+// 401 → err.code = "INVALID_KEY"（调用方可据此弹出 key 错误提示）
+async function callAnthropicAPI(prompt, apiKey, model) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: model,
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content:
+            'Please revise and improve the following prompt to make it clearer, more specific, ' +
+            'and more effective. Return ONLY the revised prompt with no preamble or explanation.\n\n' +
+            'Original prompt:\n---\n' +
+            prompt.trim() +
+            '\n---',
+        },
+      ],
+    }),
+  });
+
+  if (response.status === 401) {
+    const err = new Error('Invalid Anthropic API key');
+    err.code = 'INVALID_KEY';
+    throw err;
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(`Anthropic API error ${response.status}: ${body}`);
+  }
+
+  const data = await response.json();
+  const text = data?.content?.[0]?.text;
+  if (!text) throw new Error('Anthropic API returned no content');
+  return text;
+}
+
+// ── 监听来自 content.js 的 REVISE_VIA_API 消息
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.type !== 'REVISE_VIA_API') return false;
+
+  const { prompt, apiKey, model } = message;
+  callAnthropicAPI(prompt, apiKey, model)
+    .then((text) => sendResponse({ ok: true, text }))
+    .catch((err) => sendResponse({ ok: false, error: err.message, code: err.code ?? null }));
+
+  return true; // 保持消息通道开放（async response）
+});
+

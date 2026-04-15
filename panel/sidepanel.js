@@ -257,6 +257,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // ── 加载设置与主题
   loadSettings();
+  loadReviseSettings();
 
   // ── 加载 Prompt Library
   loadPromptLibrary();
@@ -279,6 +280,38 @@ document.addEventListener("DOMContentLoaded", () => {
     applyTheme(e.target.value);
   });
 
+  // ── Revise Mode 切换
+  document.getElementById('revise-mode-select').addEventListener('change', async (e) => {
+    const proFields = document.getElementById('pro-mode-fields');
+    const status    = document.getElementById('revise-config-status');
+    status.textContent = '';
+    if (e.target.value === 'free') {
+      // Free mode：立即保存，隐藏 pro 字段
+      await setReviseConfig({ reviseMode: 'free' });
+      proFields.classList.add('hidden');
+    } else {
+      // Pro mode：只显示字段，等用户点 Save 才写入 storage
+      proFields.classList.remove('hidden');
+    }
+  });
+
+  // ── Save Revise Config（Pro mode）
+  document.getElementById('save-revise-config-btn').addEventListener('click', async () => {
+    const key    = document.getElementById('anthropic-key-input').value.trim();
+    const model  = document.getElementById('anthropic-model-select').value;
+    const status = document.getElementById('revise-config-status');
+
+    if (!key.startsWith('sk-ant-')) {
+      status.style.color = '#e07070';
+      status.textContent = 'Key must start with sk-ant-';
+      return;
+    }
+
+    await setReviseConfig({ reviseMode: 'pro', anthropicApiKey: key, anthropicModel: model });
+    status.style.color = '#7ed4a0';
+    status.textContent = 'Saved ✓';
+    setTimeout(() => { status.textContent = ''; }, 2500);
+  });
   // ── Modal 拖拽与缩放初始化
   initModalActions();
 
@@ -326,6 +359,46 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 /* ══════════════════════════════════════════════════
+   REVISE CONFIG (mirrors content.js helpers)
+   ══════════════════════════════════════════════════ */
+
+function getReviseConfig() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['reviseMode', 'anthropicApiKey', 'anthropicModel'], (r) => {
+      resolve({
+        reviseMode: r.reviseMode ?? null,
+        anthropicApiKey: r.anthropicApiKey ?? '',
+        anthropicModel: r.anthropicModel ?? 'claude-haiku-4-5',
+      });
+    });
+  });
+}
+
+function setReviseConfig(partial) {
+  return new Promise((resolve) => {
+    chrome.storage.local.set(partial, resolve);
+  });
+}
+
+// 从 storage 读取 Revise 设置并填入表单
+async function loadReviseSettings() {
+  const config = await getReviseConfig();
+
+  const modeSelect = document.getElementById('revise-mode-select');
+  const proFields  = document.getElementById('pro-mode-fields');
+  const keyInput   = document.getElementById('anthropic-key-input');
+  const modelSelect = document.getElementById('anthropic-model-select');
+
+  // 如果 reviseMode 为 null，默认在 UI 上选 free（不改 storage，等用户保存）
+  modeSelect.value = config.reviseMode ?? 'free';
+  keyInput.value   = config.anthropicApiKey;
+  modelSelect.value = config.anthropicModel;
+
+  // 根据当前选中的 mode 显示/隐藏 pro 字段
+  proFields.classList.toggle('hidden', modeSelect.value !== 'pro');
+}
+
+/* ══════════════════════════════════════════════════
    SETTINGS & THEME
    ══════════════════════════════════════════════════ */
 
@@ -335,6 +408,15 @@ async function loadSettings() {
   document.getElementById("theme-select").value = settings.theme;
   applyTheme(settings.theme);
 }
+
+// ── 一次性清理旧版本遗留的 BYOK API Key 存储
+// 只在首次运行新版本时执行一次，之后跳过
+chrome.storage.local.get("_byokCleanupDone", (r) => {
+  if (!r._byokCleanupDone) {
+    chrome.storage.local.remove(["apiKeys"]);
+    chrome.storage.local.set({ _byokCleanupDone: true });
+  }
+});
 
 async function saveSettings(newSettings) {
   const result = await chrome.storage.local.get("settings");
