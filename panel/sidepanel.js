@@ -285,14 +285,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const proFields = document.getElementById('pro-mode-fields');
     const status    = document.getElementById('revise-config-status');
     status.textContent = '';
-    if (e.target.value === 'free') {
-      // Chat mode revise：立即保存，隐藏 pro 字段
-      await setReviseConfig({ reviseMode: 'free' });
-      proFields.classList.add('hidden');
-    } else {
-      // API Key Mode：只显示字段，等用户点 Save 才写入 storage
-      proFields.classList.remove('hidden');
-    }
+    // API Key Mode：只显示字段，等用户点 Save 才写入 storage
+    proFields.classList.remove('hidden');
   });
 
   // ── Save Revise Config（API Key Mode）
@@ -339,9 +333,9 @@ document.addEventListener("DOMContentLoaded", () => {
         setActiveAnchor(message.anchorId);
       }
     }
-    // 处理从内容页面添加 prompt 的请求
-    if (message.type === "ADD_PROMPT_FROM_CONTENT") {
-      addPrompt(message.title, message.text, "Other", "");
+    // background.js 已保存，panel 只需重新从 storage 加载
+    if (message.type === "PROMPT_LIBRARY_UPDATED") {
+      loadPromptLibrary();
     }
   });
 
@@ -389,8 +383,7 @@ async function loadReviseSettings() {
   const keyInput   = document.getElementById('anthropic-key-input');
   const modelSelect = document.getElementById('anthropic-model-select');
 
-  // 如果 reviseMode 为 null，默认在 UI 上选 free（不改 storage，等用户保存）
-  modeSelect.value = config.reviseMode ?? 'free';
+  modeSelect.value = config.reviseMode ?? 'pro';
   keyInput.value   = config.anthropicApiKey;
   modelSelect.value = config.anthropicModel;
 

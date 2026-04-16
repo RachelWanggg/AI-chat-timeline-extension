@@ -98,15 +98,39 @@ async function callAnthropicAPI(prompt, apiKey, model) {
   return text;
 }
 
-// ── 监听来自 content.js 的 REVISE_VIA_API 消息
+// ── 监听来自 content.js 的消息
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message.type !== 'REVISE_VIA_API') return false;
+  // ── ADD_PROMPT_FROM_CONTENT: 直接写 storage，不依赖 side panel 是否开启
+  if (message.type === 'ADD_PROMPT_FROM_CONTENT') {
+    const { title, text } = message;
+    chrome.storage.local.get('promptLibrary', (result) => {
+      const library = result.promptLibrary || [];
+      library.push({
+        id: Date.now().toString(36) + Math.random().toString(36).substr(2),
+        title: title.trim(),
+        text: text.trim(),
+        category: 'Other',
+        tags: [],
+        createdAt: new Date().toISOString(),
+      });
+      chrome.storage.local.set({ promptLibrary: library }, () => {
+        sendResponse({ ok: true });
+        // 通知 side panel 刷新列表（panel 未开时静默失败）
+        chrome.runtime.sendMessage({ type: 'PROMPT_LIBRARY_UPDATED' }).catch(() => {});
+      });
+    });
+    return true; // 保持通道（async sendResponse）
+  }
 
-  const { prompt, apiKey, model } = message;
-  callAnthropicAPI(prompt, apiKey, model)
-    .then((text) => sendResponse({ ok: true, text }))
-    .catch((err) => sendResponse({ ok: false, error: err.message, code: err.code ?? null }));
+  // ── REVISE_VIA_API: 调用 Anthropic API
+  if (message.type === 'REVISE_VIA_API') {
+    const { prompt, apiKey, model } = message;
+    callAnthropicAPI(prompt, apiKey, model)
+      .then((text) => sendResponse({ ok: true, text }))
+      .catch((err) => sendResponse({ ok: false, error: err.message, code: err.code ?? null }));
+    return true; // 保持消息通道开放（async response）
+  }
 
-  return true; // 保持消息通道开放（async response）
+  return false;
 });
 

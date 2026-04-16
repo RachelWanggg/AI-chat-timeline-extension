@@ -142,20 +142,31 @@ function injectSaveButtons() {
     return;
   }
 
-  // ── ChatGPT 路径：保持原有行为完全不变 ──
-  const userMessages = document.querySelectorAll(
-    'div[data-testid="user-message"],[data-message-author-role="user"]'
+  // ── ChatGPT 路径 ──
+  // 以 section[data-testid^="conversation-turn"][data-turn="user"] 为锚，
+  // 把按钮行插在 section 后面（React 管辖范围外），避免 re-render 清除或拦截 click。
+  const userTurns = document.querySelectorAll(
+    'section[data-testid^="conversation-turn"][data-turn="user"]'
   );
 
-  userMessages.forEach((msg) => {
-    if (msg.querySelector('.tl-btn-row')) return; // 已注入，跳过
+  userTurns.forEach((section) => {
+    // 文本提取：从 section 内部找 .whitespace-pre-wrap
+    const textNode = section.querySelector('.whitespace-pre-wrap');
+    if (!textNode) return;
 
-    // 按钮行容器（flex 并排）
+    // 找到 bubble 容器（data-message-author-role="user"），插在它后面继承父容器的右对齐
+    const bubbleDiv = section.querySelector('[data-message-author-role="user"]');
+    const anchor = bubbleDiv || section;
+
+    // 防重复：anchor 的下一个兄弟已经是 .tl-btn-row 则跳过
+    if (anchor.nextElementSibling?.classList.contains('tl-btn-row')) return;
+
+    // 按钮行容器：不设宽度，让父容器的 align-items:flex-end 控制右对齐
     const btnRow = document.createElement('div');
     btnRow.className = 'tl-btn-row';
-    btnRow.style.cssText = 'display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap;';
+    btnRow.style.cssText = 'display:flex;gap:6px;margin-top:4px;align-items:center;flex-wrap:wrap;align-self:flex-end;';
 
-    // ── Save to Prompt Library 按钮 chatgpt
+    // ── Save to Prompt Library 按钮
     const saveBtn = document.createElement('button');
     saveBtn.className = 'tl-action-btn tl-save-prompt-btn';
     saveBtn.textContent = '📚 Save to Prompt Library';
@@ -163,7 +174,7 @@ function injectSaveButtons() {
     saveBtn.onmouseover = () => (saveBtn.style.opacity = '1');
     saveBtn.onmouseout = () => (saveBtn.style.opacity = '0.7');
     saveBtn.onclick = () => {
-      const text = extractMsgText(msg);
+      const text = textNode.textContent.trim();
       const title = `Saved from ${window.location.host} at ${new Date().toLocaleTimeString()}`;
       addPromptFromContent(title, text);
       saveBtn.textContent = '✅ Saved!';
@@ -178,14 +189,15 @@ function injectSaveButtons() {
     reviseBtn.onmouseover = () => (reviseBtn.style.opacity = '1');
     reviseBtn.onmouseout = () => (reviseBtn.style.opacity = '0.7');
     reviseBtn.onclick = () => {
-      const text = extractMsgText(msg);
+      const text = textNode.textContent.trim();
       if (!text) return;
       handleReviseClick(text, reviseBtn);
     };
 
     btnRow.appendChild(saveBtn);
     btnRow.appendChild(reviseBtn);
-    msg.appendChild(btnRow);
+    // bubble div 后面（React 控制范围外），继承父容器的右对齐布局
+    anchor.insertAdjacentElement('afterend', btnRow);
   });
 }
 
@@ -663,7 +675,7 @@ setInterval(() => {
 setTimeout(main, 2000);
 
 // ── REVISE CONFIG HELPERS ─────────────────────────────────────────────────────
-// Storage keys: reviseMode ("free"|"pro"|null), anthropicApiKey, anthropicModel
+// Storage keys: reviseMode ("pro"|null), anthropicApiKey, anthropicModel
 
 function getReviseConfig() {
   return new Promise((resolve) => {
@@ -705,11 +717,11 @@ function reviseViaAnthropicAPI(prompt, apiKey, model) {
   });
 }
 
-// ── 统一 Revise 入口：根据 reviseMode 路由到 free 或 pro 分支
+// ── 统一 Revise 入口：仅支持 API Key Mode（pro）
 async function handleReviseClick(text, btn) {
   const config = await getReviseConfig();
 
-  // 首次使用：显示模式选择 modal
+  // 首次使用：显示设置 modal
   if (config.reviseMode === null) {
     showSetupModal(async () => {
       // 用户完成设置后，重新读取 config 并执行
@@ -718,14 +730,10 @@ async function handleReviseClick(text, btn) {
     return;
   }
 
-  // 仅在 ChatGPT 上才支持 Chat Mode Revise（DOM automation）
-  const isClaude = window.location.hostname.includes('claude.ai');
-
-  if (isClaude && config.reviseMode === 'free') {
-    showToast(
-      'Chat Mode Revise is not supported on Claude.ai yet. Set up API Key Mode in Settings.',
-      'error'
-    );
+  if (config.reviseMode !== 'pro') {
+    showSetupModal(async () => {
+      await handleReviseClick(text, btn);
+    });
     return;
   }
 
@@ -734,20 +742,15 @@ async function handleReviseClick(text, btn) {
   btn.style.opacity = '0.5';
 
   try {
-    let revised;
-    if (config.reviseMode === 'pro') {
-      if (!config.anthropicApiKey) {
-        showToast('No API key set. Open Settings → Revise Settings.', 'error');
-        return;
-      }
-      revised = await reviseViaAnthropicAPI(
-        text,
-        config.anthropicApiKey,
-        config.anthropicModel
-      );
-    } else {
-      revised = await revisePromptViaChatGPT(text);
+    if (!config.anthropicApiKey) {
+      showToast('No API key set. Open Settings → Revise Settings.', 'error');
+      return;
     }
+    const revised = await reviseViaAnthropicAPI(
+      text,
+      config.anthropicApiKey,
+      config.anthropicModel
+    );
     showRevisionModal(revised);
   } catch (err) {
     if (err.code === 'INVALID_KEY') {
@@ -762,12 +765,6 @@ async function handleReviseClick(text, btn) {
   }
 }
 
-// ── PROMPT REVISION VIA DOM AUTOMATION (Phase 1 + 2) ──────────────────────────
-// ChatGPT (chatgpt.com / chat.openai.com) ONLY.
-// Programmatically types a revision request into the composer and extracts the
-// response — the exchange appears in the conversation but is isolated to a
-// separate call from the user's original prompt.
-
 // ── Centralized selectors
 // All DOM selectors live here. When ChatGPT changes their UI, this is the only
 // place that needs updating.
@@ -780,49 +777,7 @@ const REVISION_SELECTORS = {
   // Fallback if id changes: any contenteditable inside the submit form.
   composerFallback: 'form div[contenteditable="true"]',
 
-  // Send button — data-testid is locale-independent (unlike aria-label, which
-  // changes with browser language settings).
-  sendButton: 'button[data-testid="send-button"]',
-
-  // "Stop generating" button — present DURING streaming, absent before/after.
-  // WHY this signal: it is toggled by ChatGPT's own internal streaming state
-  // machine, not a CSS transition or timer. When it disappears, the model is
-  // truly done writing — not just paused or animating. More reliable than
-  // watching the send button re-enable (which can lag) or observing the last
-  // message's MutationObserver (which requires guessing a "quiet" window).
-  stopButton: 'button[data-testid="stop-button"]',
-
-  // All conversation turns — reuses the selector already in this file.
-  conversationTurn: 'section[data-testid^="conversation-turn"]',
-
-  // The text container inside an assistant turn. textContent gives the full
-  // response text regardless of whether it contains markdown headings or plain text.
-  assistantMessage: '[data-message-author-role="assistant"]',
 };
-
-const REVISION_TIMEOUT_MS = 90_000;       // max total wait for response
-const REVISION_START_TIMEOUT_MS = 10_000; // max wait for streaming to begin
-
-// Poll conditionFn() every 200ms until it returns true or timeoutMs elapses.
-function waitForCondition(conditionFn, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const id = setInterval(() => {
-      try {
-        if (conditionFn()) {
-          clearInterval(id);
-          resolve();
-        } else if (Date.now() - start > timeoutMs) {
-          clearInterval(id);
-          reject(new Error('Timed out after ' + timeoutMs + 'ms'));
-        }
-      } catch (e) {
-        clearInterval(id);
-        reject(e);
-      }
-    }, 200);
-  });
-}
 
 // Insert text into ChatGPT's React-controlled contenteditable composer.
 //
@@ -856,132 +811,6 @@ function typeIntoComposer(composerEl, text) {
   }
 }
 
-// Wrap the original prompt in an instruction envelope for the revision task.
-function buildRevisionRequest(originalPrompt) {
-  return (
-    'Please revise and improve the following prompt to make it clearer, more specific, ' +
-    'and more effective. Return ONLY the revised prompt with no preamble or explanation.\n\n' +
-    'Original prompt:\n---\n' +
-    originalPrompt.trim() +
-    '\n---'
-  );
-}
-
-// Main automation function. Resolves with the revised prompt text.
-async function revisePromptViaChatGPT(originalPrompt) {
-  // ── 1. Locate the composer
-  const composer =
-    document.querySelector(REVISION_SELECTORS.composer) ||
-    document.querySelector(REVISION_SELECTORS.composerFallback);
-
-  if (!composer) {
-    throw new Error(
-      '[Timeline] ChatGPT composer not found. ' +
-      'Tried selectors: "' + REVISION_SELECTORS.composer + '", "' + REVISION_SELECTORS.composerFallback + '". ' +
-      'Inspect the input element and update REVISION_SELECTORS.composer.'
-    );
-  }
-
-  // ── 2. Snapshot current turn count so we can identify the new response later
-  const turnsBefore = document.querySelectorAll(REVISION_SELECTORS.conversationTurn).length;
-  console.log('[Timeline] [Revision] Turns before send:', turnsBefore);
-
-  // ── 3. Type the revision request
-  typeIntoComposer(composer, buildRevisionRequest(originalPrompt));
-
-  // Brief pause: React's reconciliation (state → send button enable) can lag
-  // ~100–200ms after the input event fires.
-  await new Promise((r) => setTimeout(r, 350));
-
-  // ── 4. Click send
-  const sendBtn = document.querySelector(REVISION_SELECTORS.sendButton);
-  if (!sendBtn) {
-    throw new Error(
-      '[Timeline] ChatGPT send button not found. ' +
-      'Selector: "' + REVISION_SELECTORS.sendButton + '". May need updating.'
-    );
-  }
-
-  const isSendDisabled =
-    sendBtn.disabled || sendBtn.getAttribute('aria-disabled') === 'true';
-  if (isSendDisabled) {
-    throw new Error(
-      '[Timeline] Send button is still disabled after typing — the composer text ' +
-      'likely did not register in React state. The execCommand approach may need ' +
-      'updating for the current ChatGPT version.'
-    );
-  }
-
-  sendBtn.click();
-  console.log('[Timeline] [Revision] Request submitted');
-
-  // ── 5. Wait for streaming to START (stop button appears)
-  // Confirms ChatGPT accepted the submission and began generating.
-  try {
-    await waitForCondition(
-      () => !!document.querySelector(REVISION_SELECTORS.stopButton),
-      REVISION_START_TIMEOUT_MS
-    );
-    console.log('[Timeline] [Revision] Streaming started');
-  } catch {
-    throw new Error(
-      '[Timeline] ChatGPT did not begin responding within ' +
-      (REVISION_START_TIMEOUT_MS / 1000) + 's. ' +
-      'Stop button selector may be outdated: "' + REVISION_SELECTORS.stopButton + '"'
-    );
-  }
-
-  // ── 6. Wait for streaming to FINISH (stop button disappears)
-  try {
-    await waitForCondition(
-      () => !document.querySelector(REVISION_SELECTORS.stopButton),
-      REVISION_TIMEOUT_MS
-    );
-    console.log('[Timeline] [Revision] Streaming complete');
-  } catch {
-    throw new Error(
-      '[Timeline] Response timed out after ' + (REVISION_TIMEOUT_MS / 1000) + 's'
-    );
-  }
-
-  // Grace period: let React flush any final DOM updates after the stream ends
-  await new Promise((r) => setTimeout(r, 500));
-
-  // ── 7. Extract the last assistant message
-  // After our submission there should be at least one new turn.
-  const allTurns = document.querySelectorAll(REVISION_SELECTORS.conversationTurn);
-  if (allTurns.length <= turnsBefore) {
-    throw new Error(
-      '[Timeline] Expected new turns after revision (had ' + turnsBefore +
-      ', still have ' + allTurns.length + '). Response may not have been captured.'
-    );
-  }
-
-  // Walk backwards from the last turn to find the most recent assistant message.
-  // (The final assistant turn is always last, but we loop defensively in case
-  // ChatGPT inserts a trailing UI turn we don't know about.)
-  let revised = null;
-  for (let i = allTurns.length - 1; i >= Math.max(0, turnsBefore - 1); i--) {
-    const assistantEl = allTurns[i].querySelector(REVISION_SELECTORS.assistantMessage);
-    if (assistantEl) {
-      // Prefer the .markdown container (clean prose text) if present; fall back
-      // to the full assistant container.
-      const textContainer = assistantEl.querySelector('.markdown') || assistantEl;
-      revised = textContainer.textContent.trim();
-      if (revised) break;
-    }
-  }
-
-  if (!revised) {
-    throw new Error(
-      '[Timeline] Could not extract assistant response. ' +
-      'assistantMessage selector "' + REVISION_SELECTORS.assistantMessage + '" may be outdated.'
-    );
-  }
-
-  console.log('[Timeline] [Revision] Extracted ' + revised.length + ' chars');
-  return revised;
-}
 
 // ── TOAST HELPER ──────────────────────────────────────────────────────────────
 // CSS tokens from sidepanel.css:
@@ -1335,45 +1164,18 @@ async function showSetupModal(onComplete) {
         c.style.setProperty('border-color', 'var(--modal-border)');
         c.style.background = 'transparent';
       };
-      c.onclick = async () => {
-        if (mode === 'free') {
-          await setReviseConfig({ reviseMode: 'free' });
-          closeSetup();
-          onComplete();
-        } else {
-          showProSetup();
-        }
-      };
+      c.onclick = showProSetup;
       return c;
     }
-
-    const isClaude = window.location.hostname.includes('claude.ai');
-
-    const freeCard = makeCard(
-      '🆓', 'Chat Mode Revise Mode',
-      'Uses ChatGPT via DOM automation. Adds 2 messages to your chat.',
-      BLUE, 'free'
+    grid.appendChild(
+      makeCard(
+        '⚡',
+        'API Key Mode',
+        "Uses your Anthropic API key. Silent, instant, and doesn't add messages to your chat.",
+        PURPLE,
+        'pro'
+      )
     );
-    // 在 claude.ai 上禁用 Chat Mode Revise卡片
-    if (isClaude) {
-      freeCard.style.opacity = '0.5';
-      freeCard.style.cursor = 'not-allowed';
-      freeCard.style.pointerEvents = 'none';
-      const badge = document.createElement('span');
-      badge.textContent = 'Coming soon';
-      badge.style.cssText =
-        'display:inline-block;font-size:10px;font-weight:600;' +
-        'background:rgba(128,128,128,0.2);color:#aaa;padding:2px 8px;' +
-        'border-radius:10px;margin-top:2px;';
-      freeCard.appendChild(badge);
-    }
-
-    const proSublabel = isClaude
-      ? "Uses your Anthropic API key. Silent, instant, and doesn't add messages to your chat."
-      : 'Calls Anthropic API directly. Silent — no chat pollution. Requires your API key.';
-
-    grid.appendChild(freeCard);
-    grid.appendChild(makeCard('⚡', 'API Key Mode', proSublabel, PURPLE, 'pro'));
 
     body.appendChild(grid);
   }
@@ -1567,11 +1369,28 @@ function injectDraftReviseTooltipCSS() {
   document.head.appendChild(style);
 }
 
-// ── 2. 找到 composer 的容器 form（作为按钮的定位 anchor）
+// ── 2. 找到 composer 的容器（作为按钮的定位 anchor）
+// ChatGPT 曾经把 #prompt-textarea 包在 <form> 里，现在可能已经去掉了 form。
+// 先找 form，找不到就往上找第一个有 position:relative/absolute 或 rounded- 的祖先，
+// 最后兜底用 composer 的 parentElement。
 function findComposerForm() {
   const composer = document.querySelector('#prompt-textarea');
   if (!composer) return null;
-  return composer.closest('form');
+
+  // 优先：还有 <form> 就用它
+  const form = composer.closest('form');
+  if (form) return form;
+
+  // 次选：往上找 className 含 rounded 的稳定容器（ChatGPT 新版 composer card）
+  let el = composer.parentElement;
+  while (el && el !== document.body) {
+    const cls = el.className || '';
+    if (typeof cls === 'string' && cls.includes('rounded')) return el;
+    el = el.parentElement;
+  }
+
+  // 兜底：直接用 parentElement
+  return composer.parentElement;
 }
 
 // ── 3. 注入浮动 Draft Revise 按钮
@@ -1626,7 +1445,8 @@ function updateDraftButtonState(btn) {
   if (!composerEl) return;
 
   const wrapper = btn.closest('.tl-revise-draft-wrapper');
-  const text = (composerEl.innerText || '').trim();
+  // .value 兼容 <textarea>，.innerText 兼容 contenteditable div（两者 ChatGPT 都可能用）
+  const text = (composerEl.value || composerEl.innerText || '').trim();
 
   if (!text) {
     btn.disabled = true;
@@ -1644,19 +1464,23 @@ function updateDraftButtonState(btn) {
 }
 
 // ── 5. 注册 composer input 监听器（一次）
-let draftInputListenerAttached = false;
+// 改用 dataset 标记替代全局 flag，防止 SPA 切换后新 element 没有 listener
 function attachComposerInputListener() {
-  if (draftInputListenerAttached) return;
   const composer = document.querySelector('#prompt-textarea');
   if (!composer) {
     setTimeout(attachComposerInputListener, 500);
     return;
   }
-  composer.addEventListener('input', () => {
+  if (composer.dataset.tlListenerAttached === 'true') return;
+
+  const handler = () => {
     const btn = document.querySelector('.tl-revise-draft-btn');
     if (btn) updateDraftButtonState(btn);
-  });
-  draftInputListenerAttached = true;
+  };
+  composer.addEventListener('input', handler);
+  // keyup 兜底：部分 React 版本不冒泡 input 事件
+  composer.addEventListener('keyup', handler);
+  composer.dataset.tlListenerAttached = 'true';
 }
 
 // ── 6. Click handler
@@ -1669,7 +1493,7 @@ async function handleDraftReviseClick(btn) {
     return;
   }
 
-  const draftText = (composer.innerText || '').trim();
+  const draftText = (composer.value || composer.innerText || '').trim();
   if (!draftText) return;
 
   if (draftText.length < 5) {
@@ -1893,10 +1717,13 @@ function attachClaudeComposerInputListener() {
   // 用 dataset 标记是否已 attach,避免重复注册
   if (composer.dataset.tlListenerAttached === 'true') return;
 
-  composer.addEventListener('input', () => {
+  const handler = () => {
     const btn = document.querySelector('.tl-revise-draft-wrapper-claude .tl-revise-draft-btn');
     if (btn) updateClaudeDraftButtonState(btn);
-  });
+  };
+  composer.addEventListener('input', handler);
+  // keyup 兜底：ProseMirror 某些操作不一定触发 input 事件
+  composer.addEventListener('keyup', handler);
 
   composer.dataset.tlListenerAttached = 'true';
   console.log('[Timeline] Claude composer input listener attached');
@@ -1990,10 +1817,3 @@ function startClaudeDraftReviseObserver() {
   console.log('[Timeline] Claude Draft Revise observer started');
   injectClaudeDraftReviseButton();
 }
-
-// ── DevTools testing hook ─────────────────────────────────────────────────────
-// Open chatgpt.com, open DevTools console (F12), then run:
-//   await window.__timelineReviseTest("write a function to sort a list")
-// Expected: returns the revised prompt string.
-// If it throws, read the error message — it names the exact selector that failed.
-window.__timelineReviseTest = revisePromptViaChatGPT;
