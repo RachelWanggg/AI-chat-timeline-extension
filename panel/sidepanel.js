@@ -286,16 +286,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const status    = document.getElementById('revise-config-status');
     status.textContent = '';
     if (e.target.value === 'free') {
-      // Free mode：立即保存，隐藏 pro 字段
+      // Chat mode revise：立即保存，隐藏 pro 字段
       await setReviseConfig({ reviseMode: 'free' });
       proFields.classList.add('hidden');
     } else {
-      // Pro mode：只显示字段，等用户点 Save 才写入 storage
+      // API Key Mode：只显示字段，等用户点 Save 才写入 storage
       proFields.classList.remove('hidden');
     }
   });
 
-  // ── Save Revise Config（Pro mode）
+  // ── Save Revise Config（API Key Mode）
   document.getElementById('save-revise-config-btn').addEventListener('click', async () => {
     const key    = document.getElementById('anthropic-key-input').value.trim();
     const model  = document.getElementById('anthropic-model-select').value;

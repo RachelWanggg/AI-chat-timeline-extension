@@ -59,15 +59,31 @@ sidepanel.js click
 
 ### 4.3 Prompt Revise Flow
 
+Two entry points share the same API call path:
+
+**A. Per-message Revise button** (injected into user message bubbles):
 ```
-content.js (Revise button click)
-  └─ chrome.runtime.sendMessage → REVISE_PROMPT { text, platform }
-       └─ background.js
-            ├─ chrome.storage.local.get("apiKeys")
-            ├─ no key? → { success: false, error: "no_api_key" }
-            └─ has key? → fetch Anthropic / OpenAI API
-                 └─ sendResponse { success: true, revised: "..." }
-                      └─ content.js → showRevisedUI()
+content.js (✨ Revise click on message bubble)
+  └─ handleReviseClick(text, btn)
+       ├─ reviseMode === null? → showSetupModal() → user picks mode
+       ├─ reviseMode === "free" (ChatGPT only)
+       │    └─ revisePromptViaChatGPT() → DOM automation (type + send + extract)
+       └─ reviseMode === "pro"
+            └─ reviseViaAnthropicAPI(text, apiKey, model)
+                 └─ chrome.runtime.sendMessage → REVISE_VIA_API
+                      └─ background.js → fetch api.anthropic.com
+                           └─ { ok: true, text: "..." } → showRevisionModal()
+```
+
+**B. Draft Revise floating button** (hovers above composer):
+```
+content.js (✨ Revise click above composer)
+  └─ handleDraftReviseClick(btn)        [ChatGPT]
+  └─ handleDraftReviseClickClaude(btn)  [Claude.ai]
+       ├─ reviseMode !== "pro" or no apiKey? → showToast(error)
+       └─ reviseViaAnthropicAPI(draftText, apiKey, model)
+            └─ REVISE_VIA_API → background.js → Anthropic API
+                 └─ showRevisionModal(revised)
 ```
 
 ### 4.4 Message Protocol
@@ -75,12 +91,12 @@ content.js (Revise button click)
 | Type | Direction | Payload |
 |------|-----------|---------|
 | `TIMELINE_UPDATE` | content → sidepanel | `TimelineTurn[]` |
-| `TIMELINE_CLEAR` | content / background → sidepanel | — |
+| `TIMELINE_CLEAR` | content → sidepanel | — |
 | `SCROLL_TO_ANCHOR` | sidepanel → content | `{ anchorId: string }` |
 | `ANCHOR_VISIBLE` | content → sidepanel | `{ anchorId: string }` |
 | `REPARSE_NOW` | sidepanel / background → content | — |
 | `ADD_PROMPT_FROM_CONTENT` | content → background → sidepanel | `{ title, text }` |
-| `REVISE_PROMPT` | content → background | `{ text, platform: "claude" \| "openai" }` |
+| `REVISE_VIA_API` | content → background | `{ prompt, apiKey, model }` → `{ ok, text }` or `{ ok: false, error, code }` |
 
 ---
 
@@ -112,11 +128,12 @@ interface Prompt {
 }
 ```
 
-### API Keys (chrome.storage.local key: `"apiKeys"`)
+### Revise Config (chrome.storage.local keys)
 ```typescript
-interface ApiKeys {
-  anthropic?: string;   // Anthropic API key (for Claude)
-  openai?: string;      // OpenAI API key (for ChatGPT)
+interface ReviseConfig {
+  reviseMode: "free" | "pro" | null;  // null = first-run, shows setup modal
+  anthropicApiKey: string;             // sk-ant-... key for API Key Mode
+  anthropicModel: string;              // e.g. "claude-haiku-4-5" | "claude-sonnet-4-6"
 }
 ```
 
@@ -144,31 +161,54 @@ Two parsing strategies:
 
 ### content.js
 
+**Timeline parsing**
+
 | Function | Responsibility |
 |----------|----------------|
 | `main()` | Entry point; resets state, routes to ChatGPT or Claude path |
-| `parseConversation(adapter)` | Iterates turn elements via adapter |
-| `parseClaude()` | Claude-specific parser (no turnSelector) |
+| `parseConversation(adapter)` | Iterates turn elements via SITE_ADAPTERS |
+| `parseClaude()` | Claude-specific parser (merges user + assistant by DOM order) |
 | `buildTimelineData(turns)` | Converts flat list → user-as-parent tree |
-| `injectSaveButtons()` | Appends Save + Revise buttons to user messages |
-| `handleReviseClick(msg, btn, platform)` | Calls REVISE_PROMPT, manages button states |
-| `showApiKeyWarning(btn)` | Fixed-position popup when no API key |
-| `showRevisedUI(msg, original, revised, platform)` | Inline revised prompt with Unrevise / Regenerate / Save |
 | `startObserver(adapter)` | MutationObserver for ChatGPT |
 | `startClaudeObserver()` | MutationObserver for Claude |
-| `startAnchorObserver()` | IntersectionObserver for active highlight |
+| `startAnchorObserver()` | IntersectionObserver for active highlight + scroll direction |
+
+**Per-message Revise (user message bubbles)**
+
+| Function | Responsibility |
+|----------|----------------|
+| `injectSaveButtons()` | Appends "Save to Prompt Library" + "✨ Revise" to user message bubbles |
+| `handleReviseClick(text, btn)` | Routes to free/pro mode; shows setup modal on first run |
+| `revisePromptViaChatGPT(prompt)` | Chat Mode — DOM automation: type → send → extract response |
+| `reviseViaAnthropicAPI(prompt, key, model)` | API Key Mode — sends REVISE_VIA_API to background.js |
+| `showRevisionModal(revisedText)` | Modal with revised text; Copy + "Use in Composer" buttons |
+| `showSetupModal(onComplete)` | First-run mode picker (Chat Mode vs API Key Mode) |
+
+**Draft Revise floating button (above composer)**
+
+| Function | Responsibility |
+|----------|----------------|
+| `injectDraftReviseButton()` | ChatGPT: injects `.tl-revise-draft-wrapper` into `<form>` |
+| `updateDraftButtonState(btn)` | Reads `#prompt-textarea.innerText`, updates disabled + tooltip |
+| `attachComposerInputListener()` | One-time `input` listener on ChatGPT composer |
+| `handleDraftReviseClick(btn)` | ChatGPT click handler → API Key Mode only |
+| `startDraftReviseObserver()` | MutationObserver to re-inject on React re-render (ChatGPT) |
+| `findClaudeComposer()` | Returns `[data-testid="chat-input"]` or `.ProseMirror` |
+| `findClaudeComposerContainer()` | Walks up DOM to find `rounded-` ancestor card |
+| `injectClaudeDraftReviseButton()` | Claude.ai: injects `.tl-revise-draft-wrapper-claude` into card |
+| `injectClaudeDraftReviseExtraCSS()` | CSS for `.tl-revise-draft-wrapper-claude` positioning |
+| `updateClaudeDraftButtonState(btn)` | Reads ProseMirror `innerText`, updates state + tooltip |
+| `attachClaudeComposerInputListener()` | One-time `input` listener on Claude.ai ProseMirror div |
+| `handleDraftReviseClickClaude(btn)` | Claude.ai click handler → API Key Mode only |
+| `startClaudeDraftReviseObserver()` | MutationObserver 5 levels up from composer (Claude.ai) |
 
 ### background.js
 
 | Function | Responsibility |
 |----------|----------------|
-| `handleRevisePrompt(text, platform)` | Reads API key, dispatches to correct API |
-| `callClaudeAPI(apiKey, text)` | `POST api.anthropic.com/v1/messages` |
-| `callOpenAIAPI(apiKey, text)` | `POST api.openai.com/v1/chat/completions` |
+| `REVISE_VIA_API` handler | Receives `{ prompt, apiKey, model }` from content.js; calls Anthropic API; returns `{ ok, text }` or `{ ok: false, error, code: "INVALID_KEY" }` |
 
-Models used:
-- Claude: `claude-haiku-4-5-20251001` (fast, low cost)
-- OpenAI: `gpt-4o-mini` (fast, low cost)
+Model default: `claude-haiku-4-5` (configurable by user in setup modal)
 
 ### sidepanel.js
 
@@ -190,9 +230,8 @@ Models used:
 | `sidePanel` | Open side panel on icon click |
 | `tabs` | Query active tab URL, send messages to content scripts |
 | `activeTab` | Access tab info |
-| `storage` | Persist pins, prompts, settings, API keys |
-| `host_permissions: api.anthropic.com` | Revise via Claude API |
-| `host_permissions: api.openai.com` | Revise via OpenAI API |
+| `storage` | Persist pins, prompts, settings, revise config |
+| `host_permissions: api.anthropic.com` | Revise via Anthropic API (both per-message and Draft Revise) |
 
 ---
 
@@ -202,7 +241,7 @@ Models used:
 - [x] ChatGPT DOM parsing (SITE_ADAPTERS)
 - [x] Claude.ai DOM parsing (custom `parseClaude`)
 - [x] Multi-heading anchor extraction (h1–h3, excluding `<pre>`)
-- [x] MutationObserver real-time updates
+- [x] MutationObserver real-time updates (ChatGPT + Claude.ai)
 - [x] Click-to-scroll (user turns + assistant headings)
 - [x] IntersectionObserver active highlight + scroll direction
 - [x] URL change detection (SPA re-parse)
@@ -210,52 +249,104 @@ Models used:
 - [x] Prompt Library (CRUD, categories, tags, search, in-place edit, copy)
 - [x] Save to Prompt Library button injected into user messages
 - [x] Light / dark / system theme
-- [x] **Prompt Revise** — AI-powered revision via user's own API key
+- [x] **Revise prompt** (per-message bubble) — API Key Mode (Anthropic) + Chat Mode (ChatGPT DOM automation)
+- [x] **Draft Revise floating button** (above composer) — ChatGPT + Claude.ai, API Key Mode only
 
 ### Planned
+- [ ] Draft Revise "Use in Composer" on Claude.ai (requires ProseMirror synthetic event injection)
 - [ ] Bookmark (cross-platform conversation saving)
 - [ ] Enter key handling (newline vs. submit toggle)
 - [ ] Copy LaTeX
-- [ ] Prompt Library export / import
 
 ---
 
 ## 10. Revise Feature — Detailed Design
 
-### UI States (button in chat)
+Two separate Revise surfaces exist side by side.
+
+---
+
+### 10.1 Per-message Revise (message bubble button)
+
+Appears as a `✨ Revise` button injected below each user message bubble.
+
+**UI States**
 
 ```
-[default]        ✨ Revise
-[loading]        ⏳ Revising...   (disabled)
-[no api key]     ✨ Revise  +  ⚠️ popup: "Open Timeline → Settings to add your API key"
-[api error]      ❌ Failed        (reverts after 2.5s)
-[success]        ✨ Revise  +  inline revised block appears below
+[default]    ✨ Revise
+[loading]    ⏳ Revising...  (disabled)
+[success]    ✨ Revise  →  Revision modal appears (floating overlay)
+[error]      toast: red error message (auto-dismisses)
 ```
 
-### Revised Block
+**Revision Modal**
 
 ```
-┌─ purple left border ──────────────────────────┐
-│ ✨ Revised prompt:                              │
-│                                               │
-│  <revised text displayed here>                │
-│                                               │
-│  [↩ Unrevise]  [🔄 Regenerate]  [💾 Save to Library] │
-└───────────────────────────────────────────────┘
+┌── ✨ Revised Prompt ─────────────────── [✕] ──┐
+│                                                │
+│  <revised text>                                │
+│                                                │
+├────────────────────────────────────────────────┤
+│              [Copy]  [Use in Composer]         │
+└────────────────────────────────────────────────┘
 ```
 
-- **Unrevise**: removes the revised block, restores default view
-- **Regenerate**: re-calls the API with the *original* text, replaces revised text
-- **Save to Library**: saves the current revised text to Prompt Library
+- **Copy**: copies revised text to clipboard
+- **Use in Composer**: inserts into ChatGPT composer (ChatGPT only — uses `execCommand('insertText')` which ChatGPT's React layer handles; does NOT work on Claude.ai's ProseMirror editor)
 
-### API Key Setup Flow
+**Modes**
 
-1. User clicks **⚙️ Settings** in the panel header
-2. Enters Anthropic API Key and/or OpenAI API Key
-3. Clicks **Save API Keys** → stored in `chrome.storage.local` under `"apiKeys"`
-4. Keys are loaded on sidepanel open and pre-filled (masked as password fields)
+| Mode | Trigger | How it works |
+|------|---------|--------------|
+| Chat Mode (`free`) | First click → setup modal → pick Chat Mode | Programmatically types a revision request into ChatGPT's composer, submits, extracts the response. ChatGPT only. |
+| API Key Mode (`pro`) | First click → setup modal → pick API Key Mode | Calls `api.anthropic.com/v1/messages` directly via background.js. Works on both ChatGPT and Claude.ai. |
 
-### Security Notes
-- API keys stored in `chrome.storage.local` (device-local, not synced)
-- Keys are never sent to any server other than the respective AI API
-- HTTPS enforced by the API endpoints themselves
+**First-run Setup Modal**
+
+Shown when `reviseMode === null`. User picks:
+- **Chat Mode** (ChatGPT only, disabled on Claude.ai)
+- **API Key Mode** → sub-view: enter `sk-ant-...` key + pick model → stored as `reviseMode: "pro"`, `anthropicApiKey`, `anthropicModel`
+
+---
+
+### 10.2 Draft Revise Floating Button (above composer)
+
+A `✨ Revise` pill button that floats above the active composer before the user sends their message.
+
+**Positioning**
+
+| Platform | Container | CSS class | Anchor |
+|----------|-----------|-----------|--------|
+| ChatGPT | `<form>` wrapping `#prompt-textarea` | `.tl-revise-draft-wrapper` | `position:absolute; top:-36px; right:12px` |
+| Claude.ai | Rounded card (first ancestor with `rounded-` in className) | `.tl-revise-draft-wrapper-claude` | `position:absolute; top:-36px; right:12px` |
+
+**Button States**
+
+```
+[composer empty]          ✨ Revise  (disabled, grey)
+                          tooltip: "Type something to revise"
+
+[composer < 5 chars]      ✨ Revise  (enabled)
+                          tooltip: "Draft too short — type more"
+
+[composer ≥ 5 chars]      ✨ Revise  (enabled, purple)
+                          tooltip: "Revise draft with AI"
+
+[API call in flight]      ⏳ Revising...  (disabled)
+
+[success]                 Revision modal opens
+```
+
+**Constraints**
+
+- API Key Mode only (no Chat Mode for Draft Revise)
+- "Use in Composer" in the modal works on ChatGPT; **does not work on Claude.ai** (ProseMirror ignores `execCommand`)
+- The MutationObserver re-injects the button if React or Claude's SPA destroys the DOM subtree
+
+---
+
+### 10.3 Security Notes
+- API key stored in `chrome.storage.local` (device-local, not synced)
+- Key is never sent to any server other than `api.anthropic.com`
+- API call is made from the background service worker (bypasses content page CSP)
+- HTTPS enforced by the API endpoint

@@ -524,11 +524,16 @@ function main() {
     sendTimelineToPanel(timelineData);
     currentObserver = startClaudeObserver();
     currentAnchorObserver = startAnchorObserver();
+
+    // ✨ 启动 Draft Revise(在 return 之前!)
+    startClaudeDraftReviseObserver();
+    attachClaudeComposerInputListener();
+
     return;
   }
-
+  
+  //ChatGPT路径
   const adapter = getAdapter();
-
   if (!adapter || !adapter.turnSelector) {
     console.log("[Timeline] No adapter for this site:", window.location.hostname);
     return;
@@ -538,6 +543,14 @@ function main() {
 
   currentObserver = startObserver(adapter);
   currentAnchorObserver = startAnchorObserver();
+  if (location.hostname.includes('chatgpt.com') || location.hostname.includes('openai.com')) {
+    startDraftReviseObserver();
+    attachComposerInputListener();
+  }
+  if (location.hostname.includes('claude.ai')) {
+    startClaudeDraftReviseObserver();
+    attachClaudeComposerInputListener();
+  }
 }
 
 // ── URL 变化检测（SPA 路由切换）
@@ -582,7 +595,7 @@ function setReviseConfig(partial) {
   });
 }
 
-// ── Pro Mode proxy: 把 API 调用转发给 background.js（绕过内容页 CSP）
+// ── API Key Mode proxy: 把 API 调用转发给 background.js（绕过内容页 CSP）
 function reviseViaAnthropicAPI(prompt, apiKey, model) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
@@ -617,12 +630,12 @@ async function handleReviseClick(text, btn) {
     return;
   }
 
-  // 仅在 ChatGPT 上才支持 Free Mode（DOM automation）
+  // 仅在 ChatGPT 上才支持 Chat Mode Revise（DOM automation）
   const isClaude = window.location.hostname.includes('claude.ai');
 
   if (isClaude && config.reviseMode === 'free') {
     showToast(
-      'Free Mode is not supported on Claude.ai yet. Set up Pro Mode in Settings.',
+      'Chat Mode Revise is not supported on Claude.ai yet. Set up API Key Mode in Settings.',
       'error'
     );
     return;
@@ -1249,11 +1262,11 @@ async function showSetupModal(onComplete) {
     const isClaude = window.location.hostname.includes('claude.ai');
 
     const freeCard = makeCard(
-      '🆓', 'Free Mode',
+      '🆓', 'Chat Mode Revise Mode',
       'Uses ChatGPT via DOM automation. Adds 2 messages to your chat.',
       BLUE, 'free'
     );
-    // 在 claude.ai 上禁用 Free Mode 卡片
+    // 在 claude.ai 上禁用 Chat Mode Revise卡片
     if (isClaude) {
       freeCard.style.opacity = '0.5';
       freeCard.style.cursor = 'not-allowed';
@@ -1272,14 +1285,14 @@ async function showSetupModal(onComplete) {
       : 'Calls Anthropic API directly. Silent — no chat pollution. Requires your API key.';
 
     grid.appendChild(freeCard);
-    grid.appendChild(makeCard('⚡', 'Pro Mode', proSublabel, PURPLE, 'pro'));
+    grid.appendChild(makeCard('⚡', 'API Key Mode', proSublabel, PURPLE, 'pro'));
 
     body.appendChild(grid);
   }
 
   // ── View B: Pro API key setup ─────────────────────────────────────
   function showProSetup() {
-    headerTitle.textContent = '⚡ Pro Mode Setup';
+    headerTitle.textContent = '⚡ API Key Mode Setup';
     body.innerHTML = '';
 
     // API key field
@@ -1380,6 +1393,514 @@ async function showSetupModal(onComplete) {
 
   // Start with mode choice view
   showModeChoice();
+}
+
+// ── DRAFT REVISE BUTTON ───────────────────────────────────────────────────────
+// Injects a "✨ Revise" button into ChatGPT's composer toolbar, left of the
+// Dictate button (which is always in the DOM even with an empty composer).
+// API Key Mode only, ChatGPT only. Distinct from the ✨ Revise button on submitted
+// message bubbles — this one revises the in-progress draft before sending.
+
+// ──────────────────────────────────────────────────────────────────────
+// DRAFT REVISE BUTTON — floating above composer
+// ──────────────────────────────────────────────────────────────────────
+// Floats above ChatGPT's composer area (outside the cramped toolbar) so
+// the tooltip has room to display without occlusion. ChatGPT only,
+// API Key Mode only. Distinct from the ✨ Revise button on submitted
+// message bubbles — this one revises the in-progress draft before sending.
+
+// ── 1. CSS：浮动按钮 + custom tooltip
+function injectDraftReviseTooltipCSS() {
+  if (document.getElementById('tl-draft-revise-tooltip-style')) return;
+  const style = document.createElement('style');
+  style.id = 'tl-draft-revise-tooltip-style';
+  style.textContent = `
+    /* Wrapper：浮动定位在 composer form 上方右侧 */
+    .tl-revise-draft-wrapper {
+      position: absolute;
+      top: -36px;          /* 浮在 composer 上方 36px 处 */
+      right: 12px;         /* 距 composer 右边 12px */
+      z-index: 999999;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    /* 按钮本体：药丸状，紫色，带阴影 */
+    .tl-revise-draft-btn {
+      background: #7c4dff;
+      color: white;
+      border: none;
+      border-radius: 16px;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+      opacity: 0.9;
+      transition: opacity 0.2s, transform 0.1s;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .tl-revise-draft-btn:hover:not(:disabled) {
+      opacity: 1;
+      transform: translateY(-1px);
+    }
+    .tl-revise-draft-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* Tooltip：显示在按钮下方（按钮已浮在外面，下方空间充足） */
+    .tl-revise-draft-wrapper::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;            /* 右对齐，避免溢出 */
+      background: rgba(40, 40, 40, 0.95);
+      color: #fff;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.1s ease-out;
+      z-index: 9999999;
+    }
+    .tl-revise-draft-wrapper:hover::after {
+      opacity: 1;
+    }
+    .tl-revise-draft-wrapper[data-tooltip=""]:hover::after {
+      opacity: 0;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+// ── 2. 找到 composer 的容器 form（作为按钮的定位 anchor）
+function findComposerForm() {
+  const composer = document.querySelector('#prompt-textarea');
+  if (!composer) return null;
+  return composer.closest('form');
+}
+
+// ── 3. 注入浮动 Draft Revise 按钮
+// 可安全重复调用——内部检查是否已存在
+function injectDraftReviseButton() {
+  // 仅在 ChatGPT 上注入
+  const isOnChatGPT =
+    window.location.hostname.includes('chatgpt.com') ||
+    window.location.hostname.includes('openai.com');
+  if (!isOnChatGPT) return;
+
+  const form = findComposerForm();
+  if (!form) return;
+
+  // 防重复注入
+  if (form.querySelector('.tl-revise-draft-wrapper')) return;
+
+  // 确保 tooltip CSS 已注入
+  injectDraftReviseTooltipCSS();
+
+  // form 必须是 position: relative，才能让 wrapper 的 absolute 定位锚定到它
+  if (getComputedStyle(form).position === 'static') {
+    form.style.position = 'relative';
+  }
+
+  // ── 创建 wrapper（承载 tooltip + 绝对定位）
+  const wrapper = document.createElement('span');
+  wrapper.className = 'tl-revise-draft-wrapper';
+  wrapper.setAttribute('data-tooltip', 'Type something to revise');
+
+  // ── 创建 button（药丸状，带文字）
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tl-revise-draft-btn';
+  btn.innerHTML = '✨ Revise';
+
+  btn.addEventListener('click', () => handleDraftReviseClick(btn));
+
+  wrapper.appendChild(btn);
+  form.appendChild(wrapper);
+
+  // 初始化按钮状态
+  updateDraftButtonState(btn);
+
+  console.log('[Timeline] Draft Revise button injected (floating above composer)');
+}
+
+// ── 4. 根据 composer 内容更新按钮状态 + tooltip 文案
+function updateDraftButtonState(btn) {
+  if (!btn) return;
+  const composerEl = document.querySelector('#prompt-textarea');
+  if (!composerEl) return;
+
+  const wrapper = btn.closest('.tl-revise-draft-wrapper');
+  const text = (composerEl.innerText || '').trim();
+
+  if (!text) {
+    btn.disabled = true;
+    if (wrapper) wrapper.setAttribute('data-tooltip', 'Type something to revise');
+  } else if (text.length < 5) {
+    btn.disabled = false;
+    if (wrapper) wrapper.setAttribute('data-tooltip', 'Draft too short — type more');
+  } else {
+    btn.disabled = false;
+    if (wrapper) wrapper.setAttribute('data-tooltip', 'Revise draft with AI');
+  }
+
+  // 移除 native title，避免双重 tooltip
+  btn.removeAttribute('title');
+}
+
+// ── 5. 注册 composer input 监听器（一次）
+let draftInputListenerAttached = false;
+function attachComposerInputListener() {
+  if (draftInputListenerAttached) return;
+  const composer = document.querySelector('#prompt-textarea');
+  if (!composer) {
+    setTimeout(attachComposerInputListener, 500);
+    return;
+  }
+  composer.addEventListener('input', () => {
+    const btn = document.querySelector('.tl-revise-draft-btn');
+    if (btn) updateDraftButtonState(btn);
+  });
+  draftInputListenerAttached = true;
+}
+
+// ── 6. Click handler
+async function handleDraftReviseClick(btn) {
+  const composer =
+    document.querySelector(REVISION_SELECTORS.composer) ||
+    document.querySelector(REVISION_SELECTORS.composerFallback);
+  if (!composer) {
+    showToast('Composer not found', 'error');
+    return;
+  }
+
+  const draftText = (composer.innerText || '').trim();
+  if (!draftText) return;
+
+  if (draftText.length < 5) {
+    showToast('Draft too short to revise', 'info');
+    return;
+  }
+
+  const config = await getReviseConfig();
+  if (config.reviseMode !== 'pro' || !config.anthropicApiKey) {
+    showToast(
+      'Draft Revise requires API Key Mode. Set up your Anthropic API key in Settings.',
+      'error'
+    );
+    return;
+  }
+
+  // Loading 状态
+  const originalLabel = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Revising...';
+
+  try {
+    const revised = await reviseViaAnthropicAPI(
+      draftText,
+      config.anthropicApiKey,
+      config.anthropicModel
+    );
+    showRevisionModal(revised);
+    // 现有 modal 的 "Use in Composer" 调用 typeIntoComposer()，
+    // 它会 selectAll + insertText，天然替换掉草稿内容
+  } catch (err) {
+    if (err.code === 'INVALID_KEY') {
+      showToast('Your API key is invalid. Update it in Settings.', 'error');
+    } else {
+      showToast('Revise failed: ' + err.message, 'error');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalLabel;
+    updateDraftButtonState(btn);
+  }
+}
+
+// ── 7. MutationObserver：保证按钮在 React 重渲染后重新注入
+let draftReviseObserver = null;
+function startDraftReviseObserver() {
+  if (draftReviseObserver) draftReviseObserver.disconnect();
+
+  const composer = document.querySelector('#prompt-textarea');
+  if (!composer) {
+    setTimeout(startDraftReviseObserver, 500);
+    return;
+  }
+
+  // 监听 form（或其上层稳定容器），捕获 React 子树重建
+  const watchTarget =
+    composer.closest('form') ||
+    composer.parentElement?.parentElement?.parentElement ||
+    composer.parentElement;
+
+  draftReviseObserver = new MutationObserver(() => {
+    const form = findComposerForm();
+    if (form && !form.querySelector('.tl-revise-draft-wrapper')) {
+      injectDraftReviseButton();
+    }
+  });
+
+  draftReviseObserver.observe(watchTarget, {
+    childList: true,
+    subtree: true,
+  });
+
+  console.log('[Timeline] Draft Revise observer started');
+  // 立即尝试注入
+  injectDraftReviseButton();
+}
+
+// ── CLAUDE.AI DRAFT REVISE BUTTON ────────────────────────────────────────────
+// Parallel implementation for Claude.ai's ProseMirror/tiptap composer.
+// All functions are Claude-specific (suffixed with "Claude") to avoid
+// any interference with the ChatGPT Draft Revise implementation above.
+
+// Find Claude.ai composer (ProseMirror inside a contenteditable div)
+function findClaudeComposer() {
+  return document.querySelector('[data-testid="chat-input"]')
+    || document.querySelector('.ProseMirror');
+}
+
+// Find a stable outer container to anchor the floating button.
+// Walks up from the composer until finding a parent whose className
+// includes "rounded-" (Claude's composer card uses rounded-[20px]).
+function findClaudeComposerContainer() {
+  const composer = findClaudeComposer();
+  if (!composer) return null;
+  let parent = composer.parentElement;
+  while (parent && parent !== document.body) {
+    const cls = parent.className || '';
+    if (typeof cls === 'string' && cls.includes('rounded-')) {
+      return parent;
+    }
+    parent = parent.parentElement;
+  }
+  // Fallback: grandparent if no rounded ancestor found
+  return composer.parentElement?.parentElement || composer.parentElement;
+}
+
+// 注入按钮 — 修改:每次注入后都尝试 attach listener(防 SPA 切换)
+function injectClaudeDraftReviseButton() {
+  if (!window.location.hostname.includes('claude.ai')) return;
+
+  const container = findClaudeComposerContainer();
+  if (!container) return;
+
+  if (container.querySelector('.tl-revise-draft-wrapper-claude')) {
+    // 按钮已存在,但仍要确保 listener attached(SPA 切换可能换了 composer)
+    attachClaudeComposerInputListener();
+    return;
+  }
+
+  injectDraftReviseTooltipCSS();
+  injectClaudeDraftReviseExtraCSS();
+
+  if (getComputedStyle(container).position === 'static') {
+    container.style.position = 'relative';
+  }
+
+  const wrapper = document.createElement('span');
+  wrapper.className = 'tl-revise-draft-wrapper-claude';
+  wrapper.setAttribute('data-tooltip', 'Type something to revise');
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tl-revise-draft-btn';
+  btn.innerHTML = '✨ Revise';
+  btn.addEventListener('click', () => handleDraftReviseClickClaude(btn));
+
+  wrapper.appendChild(btn);
+  container.appendChild(wrapper);
+
+  updateClaudeDraftButtonState(btn);
+
+  // ✨ 关键修改:注入按钮的同时立刻 attach listener(用最新的 composer reference)
+  attachClaudeComposerInputListener();
+
+  console.log('[Timeline] Claude Draft Revise button injected + listener attached');
+}
+
+// Inject Claude-specific CSS for the wrapper positioning.
+// (The ChatGPT version uses .tl-revise-draft-wrapper relative to the form.
+// We need a separate class for Claude's rounded card container.)
+function injectClaudeDraftReviseExtraCSS() {
+  if (document.getElementById('tl-claude-draft-revise-style')) return;
+  const style = document.createElement('style');
+  style.id = 'tl-claude-draft-revise-style';
+  style.textContent = `
+    .tl-revise-draft-wrapper-claude {
+      position: absolute;
+      top: -36px;
+      right: 12px;
+      z-index: 999999;
+      display: inline-flex;
+      align-items: center;
+    }
+    .tl-revise-draft-wrapper-claude::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      background: rgba(40, 40, 40, 0.95);
+      color: #fff;
+      font-size: 12px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.1s ease-out;
+      z-index: 9999999;
+    }
+    .tl-revise-draft-wrapper-claude:hover::after {
+      opacity: 1;
+    }
+    .tl-revise-draft-wrapper-claude[data-tooltip=""]:hover::after {
+      opacity: 0;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+// Update Claude button state based on composer content
+function updateClaudeDraftButtonState(btn) {
+  if (!btn) return;
+  const composer = findClaudeComposer();
+  if (!composer) return;
+
+  const wrapper = btn.closest('.tl-revise-draft-wrapper-claude');
+  // ProseMirror text extraction: use innerText (handles tiptap structure)
+  const text = (composer.innerText || '').trim();
+
+  if (!text) {
+    btn.disabled = true;
+    if (wrapper) wrapper.setAttribute('data-tooltip', 'Type something to revise');
+  } else if (text.length < 5) {
+    btn.disabled = false;
+    if (wrapper) wrapper.setAttribute('data-tooltip', 'Draft too short — type more');
+  } else {
+    btn.disabled = false;
+    if (wrapper) wrapper.setAttribute('data-tooltip', 'Revise draft with AI');
+  }
+  btn.removeAttribute('title');
+}
+
+// 不再用全局标志位 — 改用 dataset 标记 composer 是否已有 listener
+function attachClaudeComposerInputListener() {
+  const composer = findClaudeComposer();
+  if (!composer) {
+    setTimeout(attachClaudeComposerInputListener, 500);
+    return;
+  }
+
+  // 用 dataset 标记是否已 attach,避免重复注册
+  if (composer.dataset.tlListenerAttached === 'true') return;
+
+  composer.addEventListener('input', () => {
+    const btn = document.querySelector('.tl-revise-draft-wrapper-claude .tl-revise-draft-btn');
+    if (btn) updateClaudeDraftButtonState(btn);
+  });
+
+  composer.dataset.tlListenerAttached = 'true';
+  console.log('[Timeline] Claude composer input listener attached');
+}
+
+// Click handler for Claude version
+async function handleDraftReviseClickClaude(btn) {
+  const composer = findClaudeComposer();
+  if (!composer) {
+    showToast('Claude composer not found', 'error');
+    return;
+  }
+
+  const draftText = (composer.innerText || '').trim();
+  if (!draftText) return;
+  if (draftText.length < 5) {
+    showToast('Draft too short to revise', 'info');
+    return;
+  }
+
+  const config = await getReviseConfig();
+  if (config.reviseMode !== 'pro' || !config.anthropicApiKey) {
+    showToast(
+      'Draft Revise requires API Key Mode. Set up your Anthropic API key in Settings.',
+      'error'
+    );
+    return;
+  }
+
+  const originalLabel = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Revising...';
+
+  try {
+    const revised = await reviseViaAnthropicAPI(
+      draftText,
+      config.anthropicApiKey,
+      config.anthropicModel
+    );
+    showRevisionModal(revised);
+    // NOTE: The existing showRevisionModal's "Use in Composer" button calls
+    // typeIntoComposer(), which uses ChatGPT-specific selectors and execCommand.
+    // It will NOT work on Claude's ProseMirror editor. Known limitation —
+    // users should use the "Copy" button on Claude.ai. Cross-platform
+    // composer insertion is a separate follow-up task.
+  } catch (err) {
+    if (err.code === 'INVALID_KEY') {
+      showToast('Your API key is invalid. Update it in Settings.', 'error');
+    } else {
+      showToast('Revise failed: ' + err.message, 'error');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalLabel;
+    updateClaudeDraftButtonState(btn);
+  }
+}
+
+// MutationObserver for Claude.ai — re-injects button on DOM changes
+let claudeDraftReviseObserver = null;
+function startClaudeDraftReviseObserver() {
+  if (!window.location.hostname.includes('claude.ai')) return;
+
+  if (claudeDraftReviseObserver) claudeDraftReviseObserver.disconnect();
+
+  const composer = findClaudeComposer();
+  if (!composer) {
+    setTimeout(startClaudeDraftReviseObserver, 500);
+    return;
+  }
+
+  // Watch a stable ancestor — walk up several levels to capture all
+  // re-renders that might evict our button
+  let watchTarget = composer;
+  for (let i = 0; i < 5 && watchTarget.parentElement; i++) {
+    watchTarget = watchTarget.parentElement;
+  }
+
+  claudeDraftReviseObserver = new MutationObserver(() => {
+    const container = findClaudeComposerContainer();
+    if (container && !container.querySelector('.tl-revise-draft-wrapper-claude')) {
+      injectClaudeDraftReviseButton();
+    }
+  });
+
+  claudeDraftReviseObserver.observe(watchTarget, {
+    childList: true,
+    subtree: true,
+  });
+
+  console.log('[Timeline] Claude Draft Revise observer started');
+  injectClaudeDraftReviseButton();
 }
 
 // ── DevTools testing hook ─────────────────────────────────────────────────────
