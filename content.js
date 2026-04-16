@@ -53,8 +53,96 @@ function extractMsgText(msg) {
   return clone.textContent.trim();
 }
 
+// ── Claude.ai action row 样式（一次性注入，用 id 防重复）
+function injectClaudeActionRowCSS() {
+  if (document.getElementById('tl-injected-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'tl-injected-styles';
+  style.textContent = `
+    .tl-action-row {
+      display: flex;
+      gap: 6px;
+      padding: 2px 0;
+      margin-top: 2px;
+    }
+    .tl-action-row .tl-action-btn {
+      background: transparent;
+      border: none;
+      font-size: 12px;
+      cursor: pointer;
+      opacity: 0.4;
+      transition: opacity 0.15s;
+      padding: 2px 4px;
+      border-radius: 3px;
+      color: inherit;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+    .tl-action-row .tl-action-btn:hover {
+      opacity: 1;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 // ── 给消息框动态添加 "Save to Prompt Library" + "✨ Revise" 按钮行 ──
 function injectSaveButtons() {
+  const isClaude = window.location.hostname.includes('claude.ai');
+
+  if (isClaude) {
+    // ── Claude.ai 专用路径：按钮行插在气泡外部（wrapper 之后的兄弟节点）
+    injectClaudeActionRowCSS();
+
+    document.querySelectorAll('div[data-testid="user-message"]').forEach((msg) => {
+      // 向上走 2 级，找到包裹整个消息块（头像 + 气泡）的容器
+      const wrapper = msg.parentElement?.parentElement?.parentElement || msg.parentElement;
+      if (!wrapper) return;
+
+      // 防重复：wrapper 的下一个兄弟已经是 .tl-action-row 则跳过
+      if (wrapper.nextElementSibling?.classList.contains('tl-action-row')) return;
+
+      const actionRow = document.createElement('div');
+      actionRow.className = 'tl-action-row';
+
+      // ── Save to Prompt Library 按钮 claude
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'tl-action-btn tl-save-prompt-btn';
+      saveBtn.textContent = '📚 Save to Prompt Library';
+      saveBtn.style.cssText = TL_BTN_STYLE + 'background:#5b9cf6;';
+      saveBtn.onmouseover = () => (saveBtn.style.opacity = '1');
+      saveBtn.onmouseout = () => (saveBtn.style.opacity = '0.7');
+      saveBtn.onclick = () => {
+        const text = extractMsgText(msg);
+        const title = `Saved from ${window.location.host} at ${new Date().toLocaleTimeString()}`;
+        addPromptFromContent(title, text);
+        saveBtn.textContent = '✅ Saved!';
+        setTimeout(() => (saveBtn.textContent = '📚 Save to Prompt Library'), 2000);
+      };
+
+      // ── Revise 按钮（使用现有 handleReviseClick，未来可扩展）
+      const reviseBtn = document.createElement('button');
+      reviseBtn.className = 'tl-action-btn tl-revise-btn';
+      reviseBtn.textContent = '✨ Revise';
+      reviseBtn.style.cssText = TL_BTN_STYLE + 'background:#7c4dff;';
+      reviseBtn.onmouseover = () => (reviseBtn.style.opacity = '1');
+      reviseBtn.onmouseout = () => (reviseBtn.style.opacity = '0.7');
+      reviseBtn.onclick = () => {
+        const text = extractMsgText(msg);
+        if (!text) return;
+        handleReviseClick(text, reviseBtn);
+      };
+
+      actionRow.appendChild(saveBtn);
+      actionRow.appendChild(reviseBtn);
+
+      // 插入到 wrapper 后面，气泡外部
+      wrapper.insertAdjacentElement('afterend', actionRow);
+    });
+
+    return;
+  }
+
+  // ── ChatGPT 路径：保持原有行为完全不变 ──
   const userMessages = document.querySelectorAll(
     'div[data-testid="user-message"],[data-message-author-role="user"]'
   );
@@ -67,10 +155,10 @@ function injectSaveButtons() {
     btnRow.className = 'tl-btn-row';
     btnRow.style.cssText = 'display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap;';
 
-    // ── Save to Prompt Library 按钮
+    // ── Save to Prompt Library 按钮 chatgpt
     const saveBtn = document.createElement('button');
-    saveBtn.className = 'tl-save-prompt-btn';
-    saveBtn.textContent = 'Save to Prompt Library';
+    saveBtn.className = 'tl-action-btn tl-save-prompt-btn';
+    saveBtn.textContent = '📚 Save to Prompt Library';
     saveBtn.style.cssText = TL_BTN_STYLE + 'background:#5b9cf6;';
     saveBtn.onmouseover = () => (saveBtn.style.opacity = '1');
     saveBtn.onmouseout = () => (saveBtn.style.opacity = '0.7');
@@ -79,7 +167,7 @@ function injectSaveButtons() {
       const title = `Saved from ${window.location.host} at ${new Date().toLocaleTimeString()}`;
       addPromptFromContent(title, text);
       saveBtn.textContent = '✅ Saved!';
-      setTimeout(() => (saveBtn.textContent = 'Save to Prompt Library'), 2000);
+      setTimeout(() => (saveBtn.textContent = '📚 Save to Prompt Library'), 2000);
     };
 
     // ── Revise 按钮
