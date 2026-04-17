@@ -27,6 +27,8 @@ function smartTruncate(text, maxLength) {
 
 // ── 发送消息给插件侧添加 prompt ──
 function addPromptFromContent(title, text) {
+  if (!chrome.runtime?.id) return;
+
   chrome.runtime.sendMessage({
     type: "ADD_PROMPT_FROM_CONTENT",
     title,
@@ -468,6 +470,12 @@ function buildTimelineData(parsedTurns) {
 
 // ── 发送数据给 side panel
 function sendTimelineToPanel(timelineData) {
+  // 检查扩展上下文是否还有效（防止重新加载扩展时报错）
+  if (!chrome.runtime?.id) {
+    console.log("[Timeline] Extension context invalidated, skipping message.");
+    return;
+  }
+
   // side panel 可能没有打开，所以用 try/catch 保护
   chrome.runtime.sendMessage({
     type: "TIMELINE_UPDATE",
@@ -507,6 +515,8 @@ function startAnchorObserver() {
           a.boundingClientRect.bottom > b.boundingClientRect.bottom ? a : b
         );
       }
+
+      if (!chrome.runtime?.id) return;
 
       chrome.runtime.sendMessage({
         type: "ANCHOR_VISIBLE",
@@ -604,7 +614,13 @@ let currentAnchorObserver = null; // 当前 IntersectionObserver
 
 // ── 主函数
 function main() {
-  anchorCounter = 0;
+  // ── 推送当前 URL 给 side panel（用于生成 storage key）
+  if (chrome.runtime?.id) {
+    chrome.runtime.sendMessage({
+      type: "UPDATE_PAGE_URL",
+      url: window.location.href,
+    }).catch(() => {});
+  }
   
   // 先 disconnect 旧的 observer，防止重复监听
   if (currentObserver) {
@@ -663,8 +679,10 @@ setInterval(() => {
     console.log("[Timeline] URL changed, reloading timeline...");
 
     // 先通知 side panel 清空显示
-    chrome.runtime.sendMessage({ type: "TIMELINE_CLEAR" }).catch(() => { });
-
+    if (chrome.runtime?.id) {
+      chrome.runtime.sendMessage({ type: "TIMELINE_CLEAR" }).catch(() => {});
+    }
+    
     // 等 2000ms 让 SPA 重新渲染 DOM，再重新解析
     setTimeout(main, 2000);
   }

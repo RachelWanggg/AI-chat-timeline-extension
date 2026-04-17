@@ -37,9 +37,13 @@ let lastTimelineData = [];
 // key: anchorId, value: { id, label, userText }
 let pinnedAnchors = new Map();
 
+// ── 当前页面 URL（由 content script 推送）
+// 用来生成 per-conversation storage key
+let currentPageUrl = "unknown";
+
 // 从 chrome.storage.local 读取上次保存的 pins
 async function loadPinnedAnchors() {
-  const key = await getStorageKey();
+  const key = getStorageKey();
   const result = await chrome.storage.local.get(key);
   if (result[key]) {
     pinnedAnchors = new Map(Object.entries(result[key]));
@@ -51,7 +55,7 @@ async function loadPinnedAnchors() {
 // 每次 pin/unpin 后都调用，持久化到 storage
 async function savePinnedAnchors() {
   // Map 不能直接 JSON 序列化，转成 Object
-  const key = await getStorageKey();
+  const key = getStorageKey();
   const obj = Object.fromEntries(pinnedAnchors);
   await chrome.storage.local.set({ [key]: obj });
 }
@@ -134,12 +138,13 @@ function scrollToAnchor(anchorId) {
 // 获取当前 tab 的 URL，生成 per-conversation storage key
 // 用 URL 作为 namespace，隔离不同对话的 pins
 function getStorageKey() {
-  return new Promise((resolve) => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const url = tabs[0]?.url ?? "unknown";
-      resolve(`pins:${url}`);
-    });
-  });
+  // return new Promise((resolve) => {
+  //   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  //     const url = tabs[0]?.url ?? "unknown";
+  //     resolve(`pins:${url}`);
+  //   });
+  // });
+  return `pins:${currentPageUrl}`;
 }
 
 // ── 渲染单个用户消息块（conversation turn）
@@ -333,6 +338,13 @@ document.addEventListener("DOMContentLoaded", () => {
         setActiveAnchor(message.anchorId);
       }
     }
+
+    // ── 接收 content script 推送的当前页面 URL
+    if (message.type === "UPDATE_PAGE_URL") {
+      currentPageUrl = message.url;
+      console.log("[Panel] Updated page URL:", currentPageUrl);
+    }
+    
     // background.js 已保存，panel 只需重新从 storage 加载
     if (message.type === "PROMPT_LIBRARY_UPDATED") {
       loadPromptLibrary();
