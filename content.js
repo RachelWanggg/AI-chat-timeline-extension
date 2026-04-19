@@ -4,7 +4,7 @@
 // 全局变量 id 计数器（monotonically increasing counter）
 let anchorCounter = 0;
 
-
+let lastTimelineJSON = "";
 
 // ── 智能截断（smart truncate）
 // 不在单词中间截断，在最近的空格处截断
@@ -87,61 +87,70 @@ function injectClaudeActionRowCSS() {
   document.head.appendChild(style);
 }
 
+let isInjecting = false;
 // ── 给消息框动态添加 "Save to Prompt Library" + "✨ Revise" 按钮行 ──
 function injectSaveButtons() {
-  const isClaude = window.location.hostname.includes('claude.ai');
+  if (isInjecting) return;
+  isInjecting = true;
 
-  if (isClaude) {
-    // ── Claude.ai 专用路径：按钮行插在气泡外部（wrapper 之后的兄弟节点）
-    injectClaudeActionRowCSS();
+  try {
+    console.log("💥 injectSaveButtons called");
+    const isClaude = window.location.hostname.includes('claude.ai');
 
-    document.querySelectorAll('div[data-testid="user-message"]').forEach((msg) => {
-      // 向上走 2 级，找到包裹整个消息块（头像 + 气泡）的容器
-      const wrapper = msg.parentElement?.parentElement?.parentElement || msg.parentElement;
-      if (!wrapper) return;
+    if (isClaude) {
+      // ── Claude.ai 专用路径：按钮行插在气泡外部（wrapper 之后的兄弟节点）
+      injectClaudeActionRowCSS();
 
-      // 防重复：wrapper 的下一个兄弟已经是 .tl-action-row 则跳过
-      if (wrapper.nextElementSibling?.classList.contains('tl-action-row')) return;
+      document.querySelectorAll('div[data-testid="user-message"]').forEach((msg) => {
+        // 向上走 2 级，找到包裹整个消息块（头像 + 气泡）的容器
+        const wrapper = msg.parentElement?.parentElement?.parentElement || msg.parentElement;
+        if (!wrapper) return;
 
-      const actionRow = document.createElement('div');
-      actionRow.className = 'tl-action-row';
+        // 防重复：wrapper 的下一个兄弟已经是 .tl-action-row 则跳过
+        if (wrapper.nextElementSibling?.classList.contains('tl-action-row')) return;
 
-      // ── Save to Prompt Library 按钮 claude
-      const saveBtn = document.createElement('button');
-      saveBtn.className = 'tl-action-btn tl-save-prompt-btn';
-      saveBtn.textContent = '📚 Save to Prompt Library';
-      saveBtn.style.cssText = TL_BTN_STYLE + 'background:#5b9cf6;';
-      saveBtn.onmouseover = () => (saveBtn.style.opacity = '1');
-      saveBtn.onmouseout = () => (saveBtn.style.opacity = '0.7');
-      saveBtn.onclick = () => {
-        const text = extractMsgText(msg);
-        const title = `Saved from ${window.location.host} at ${new Date().toLocaleTimeString()}`;
-        addPromptFromContent(title, text);
-        saveBtn.textContent = '✅ Saved!';
-        setTimeout(() => (saveBtn.textContent = '📚 Save to Prompt Library'), 2000);
-      };
+        const actionRow = document.createElement('div');
+        actionRow.className = 'tl-action-row';
 
-      // ── Revise 按钮（使用现有 handleReviseClick，未来可扩展）
-      const reviseBtn = document.createElement('button');
-      reviseBtn.className = 'tl-action-btn tl-revise-btn';
-      reviseBtn.textContent = '✨ Revise';
-      reviseBtn.style.cssText = TL_BTN_STYLE + 'background:#7c4dff;';
-      reviseBtn.onmouseover = () => (reviseBtn.style.opacity = '1');
-      reviseBtn.onmouseout = () => (reviseBtn.style.opacity = '0.7');
-      reviseBtn.onclick = () => {
-        const text = extractMsgText(msg);
-        if (!text) return;
-        handleReviseClick(text, reviseBtn);
-      };
+        // ── Save to Prompt Library 按钮 claude
+        const saveBtn = document.createElement('button');
+        saveBtn.className = 'tl-action-btn tl-save-prompt-btn';
+        saveBtn.textContent = '📚 Save to Prompt Library';
+        saveBtn.style.cssText = TL_BTN_STYLE + 'background:#5b9cf6;';
+        saveBtn.onmouseover = () => (saveBtn.style.opacity = '1');
+        saveBtn.onmouseout = () => (saveBtn.style.opacity = '0.7');
+        saveBtn.onclick = () => {
+          const text = extractMsgText(msg);
+          const title = `Saved from ${window.location.host} at ${new Date().toLocaleTimeString()}`;
+          addPromptFromContent(title, text);
+          saveBtn.textContent = '✅ Saved!';
+          setTimeout(() => (saveBtn.textContent = '📚 Save to Prompt Library'), 2000);
+        };
 
-      actionRow.appendChild(saveBtn);
-      actionRow.appendChild(reviseBtn);
+        // ── Revise 按钮（使用现有 handleReviseClick，未来可扩展）
+        const reviseBtn = document.createElement('button');
+        reviseBtn.className = 'tl-action-btn tl-revise-btn';
+        reviseBtn.textContent = '✨ Revise';
+        reviseBtn.style.cssText = TL_BTN_STYLE + 'background:#7c4dff;';
+        reviseBtn.onmouseover = () => (reviseBtn.style.opacity = '1');
+        reviseBtn.onmouseout = () => (reviseBtn.style.opacity = '0.7');
+        reviseBtn.onclick = () => {
+          const text = extractMsgText(msg);
+          if (!text) return;
+          handleReviseClick(text, reviseBtn);
+        };
 
-      // 插入到 wrapper 后面，气泡外部
-      wrapper.insertAdjacentElement('afterend', actionRow);
-    });
+        actionRow.appendChild(saveBtn);
+        actionRow.appendChild(reviseBtn);
 
-    return;
+        // 插入到 wrapper 后面，气泡外部
+        wrapper.insertAdjacentElement('afterend', actionRow);
+      });
+
+      return;
+    }
+  } finally {
+    isInjecting = false;
   }
 
   // ── ChatGPT 路径 ──
@@ -152,6 +161,10 @@ function injectSaveButtons() {
   );
 
   userTurns.forEach((section) => {
+    if (section.dataset.tlProcessed === "true") return;
+
+    section.dataset.tlProcessed = "true";
+
     // 文本提取：从 section 内部找 .whitespace-pre-wrap
     const textNode = section.querySelector('.whitespace-pre-wrap');
     if (!textNode) return;
@@ -362,6 +375,13 @@ function parseClaude() {
     }
   });
 
+  // 在 parseClaude() 的 return result 之前加
+  // console.log("[Timeline] parseClaude anchors:",
+  //   result.filter(r => r.role === 'assistant')
+  //     .flatMap(r => r.anchors)
+  //     .map(a => `${a.id} → ${a.label}`)
+  // );
+
   return result;
 }
 
@@ -378,10 +398,27 @@ function startClaudeObserver() {
   }, 800);
 
   const observer = new MutationObserver((mutations) => {
-    const hasRelevantChange = mutations.some(
-      (mutation) => mutation.type === "childList" && mutation.addedNodes.length > 0
+    const hasNewMessage = mutations.some((mutation) =>
+      Array.from(mutation.addedNodes).some((node) => {
+        if (node.nodeType !== 1) return false;
+  
+        // ✅ Claude 用户消息
+        if (node.matches?.('div[data-testid="user-message"]')) return true;
+  
+        // ✅ Claude assistant 消息
+        if (node.matches?.('div.font-claude-response')) return true;
+  
+        // ✅ 有时候是包裹层
+        if (node.querySelector?.('div[data-testid="user-message"]')) return true;
+        if (node.querySelector?.('div.font-claude-response')) return true;
+  
+        return false;
+      })
     );
-    if (hasRelevantChange) {
+  
+    if (hasNewMessage) {
+      console.log("🟢 New Claude message detected");
+      injectSaveButtons();   // ✅ 只在新消息时触发
       debouncedParse();
     }
   });
@@ -540,11 +577,12 @@ function startAnchorObserver() {
 
 // ── 核心：解析 + 发送 + 更新 anchor 观察
 function parseAndSend(adapter) {
-  // 注入保存按钮
-  injectSaveButtons();
 
   const parsed = parseConversation(adapter);
   const timelineData = buildTimelineData(parsed);
+  const currentJSON = JSON.stringify(timelineData);
+  if (currentJSON === lastTimelineJSON) return;
+  lastTimelineJSON = currentJSON;
   console.log("[Timeline] Updated:", timelineData.length, "turns");
   sendTimelineToPanel(timelineData);
 
@@ -570,11 +608,17 @@ function startObserver(adapter) {
 
   const observer = new MutationObserver((mutations) => {
     // 检查是否有相关节点变化（过滤无关的 DOM 操作）
-    const hasRelevantChange = mutations.some((mutation) =>
-      mutation.type === "childList" && mutation.addedNodes.length > 0
+    const hasNewMessage = mutations.some((mutation) =>
+      Array.from(mutation.addedNodes).some((node) =>
+        node.nodeType === 1 &&
+        (
+          node.matches?.('section[data-testid^="conversation-turn"]') ||
+          node.querySelector?.('section[data-testid^="conversation-turn"]')
+        )
+      )
     );
-
-    if (hasRelevantChange) {
+    if (hasNewMessage) {
+      injectSaveButtons();   // ✅ 只在新 turn 时
       debouncedParse();
     }
   });
@@ -619,9 +663,9 @@ function main() {
     chrome.runtime.sendMessage({
       type: "UPDATE_PAGE_URL",
       url: window.location.href,
-    }).catch(() => {});
+    }).catch(() => { });
   }
-  
+
   // 先 disconnect 旧的 observer，防止重复监听
   if (currentObserver) {
     currentObserver.disconnect();
@@ -647,7 +691,7 @@ function main() {
 
     return;
   }
-  
+
   //ChatGPT路径
   const adapter = getAdapter();
   if (!adapter || !adapter.turnSelector) {
@@ -680,9 +724,9 @@ setInterval(() => {
 
     // 先通知 side panel 清空显示
     if (chrome.runtime?.id) {
-      chrome.runtime.sendMessage({ type: "TIMELINE_CLEAR" }).catch(() => {});
+      chrome.runtime.sendMessage({ type: "TIMELINE_CLEAR" }).catch(() => { });
     }
-    
+
     // 等 2000ms 让 SPA 重新渲染 DOM，再重新解析
     setTimeout(main, 2000);
   }
@@ -850,8 +894,8 @@ function showToast(message, type = 'info') {
 
   const palette = {
     success: { bg: '#1a2e22', border: '#2e7d50', text: '#7ed4a0' },
-    error:   { bg: '#2e1a1a', border: '#7d2e2e', text: '#e07070' },
-    info:    { bg: '#1a2233', border: '#2e4a7d', text: '#7aaee8' },
+    error: { bg: '#2e1a1a', border: '#7d2e2e', text: '#e07070' },
+    info: { bg: '#1a2233', border: '#2e4a7d', text: '#7aaee8' },
   };
   const p = palette[type] || palette.info;
   const duration = type === 'error' ? 4000 : 2500;
@@ -998,7 +1042,7 @@ async function showRevisionModal(revisedText) {
     'background:none;border:none;cursor:pointer;font-size:14px;color:var(--modal-text);' +
     'padding:4px 8px;border-radius:4px;line-height:1;transition:background 0.2s;';
   closeBtn.onmouseover = () => closeBtn.style.setProperty('background', 'var(--modal-close-hover)');
-  closeBtn.onmouseout  = () => (closeBtn.style.background = 'none');
+  closeBtn.onmouseout = () => (closeBtn.style.background = 'none');
   closeBtn.onclick = closeModal;
 
   header.appendChild(title);
@@ -1031,7 +1075,7 @@ async function showRevisionModal(revisedText) {
     'border:1px solid var(--modal-secondary-border);background:transparent;' +
     'color:var(--modal-secondary-color);transition:background 0.2s;';
   copyBtn.onmouseover = () => copyBtn.style.setProperty('background', 'var(--modal-back-hover)');
-  copyBtn.onmouseout  = () => (copyBtn.style.background = 'transparent');
+  copyBtn.onmouseout = () => (copyBtn.style.background = 'transparent');
   copyBtn.onclick = async () => {
     try {
       await navigator.clipboard.writeText(revisedText);
@@ -1049,7 +1093,7 @@ async function showRevisionModal(revisedText) {
     'padding:8px 14px;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;' +
     'border:none;background:#5b9cf6;color:#fff;transition:background 0.2s;';
   useBtn.onmouseover = () => (useBtn.style.background = '#7aacff');
-  useBtn.onmouseout  = () => (useBtn.style.background = '#5b9cf6');
+  useBtn.onmouseout = () => (useBtn.style.background = '#5b9cf6');
   useBtn.onclick = () => {
     const composer =
       document.querySelector(REVISION_SELECTORS.composer) ||
@@ -1095,9 +1139,9 @@ async function showSetupModal(onComplete) {
   const theme = await getResolvedTheme();
 
   // Accent colors are theme-independent
-  const BLUE   = '#5b9cf6';
+  const BLUE = '#5b9cf6';
   const PURPLE = '#7c4dff';
-  const FONT   = '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+  const FONT = '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
 
   // ── Backdrop
   const backdrop = document.createElement('div');
@@ -1138,7 +1182,7 @@ async function showSetupModal(onComplete) {
     'background:none;border:none;cursor:pointer;font-size:14px;color:var(--modal-text);' +
     'padding:4px 8px;border-radius:4px;transition:background 0.2s;';
   closeBtn.onmouseover = () => closeBtn.style.setProperty('background', 'var(--modal-close-hover)');
-  closeBtn.onmouseout  = () => (closeBtn.style.background = 'none');
+  closeBtn.onmouseout = () => (closeBtn.style.background = 'none');
   closeBtn.onclick = closeSetup;
   header.appendChild(headerTitle);
   header.appendChild(closeBtn);
@@ -1217,7 +1261,7 @@ async function showSetupModal(onComplete) {
       `color:var(--modal-text);border-radius:4px;font-size:12px;font-family:${FONT};` +
       'outline:none;box-sizing:border-box;margin-bottom:14px;';
     keyInput.onfocus = () => keyInput.style.setProperty('border-color', BLUE);
-    keyInput.onblur  = () => keyInput.style.setProperty('border-color', 'var(--modal-input-border)');
+    keyInput.onblur = () => keyInput.style.setProperty('border-color', 'var(--modal-input-border)');
 
     // Model select
     const modelLabel = document.createElement('label');
@@ -1231,9 +1275,9 @@ async function showSetupModal(onComplete) {
       `color:var(--modal-text);border-radius:4px;font-size:12px;font-family:${FONT};` +
       'outline:none;cursor:pointer;box-sizing:border-box;margin-bottom:18px;';
     [
-      ['claude-haiku-4-5',  'Claude Haiku 4.5 (Fast & Cheap)'],
+      ['claude-haiku-4-5', 'Claude Haiku 4.5 (Fast & Cheap)'],
       ['claude-sonnet-4-6', 'Claude Sonnet 4.6 (Balanced)'],
-      ['claude-opus-4-6',   'Claude Opus 4.6 (Best Quality)'],
+      ['claude-opus-4-6', 'Claude Opus 4.6 (Best Quality)'],
     ].forEach(([val, txt]) => {
       const opt = document.createElement('option');
       opt.value = val;
@@ -1244,7 +1288,7 @@ async function showSetupModal(onComplete) {
     // Pre-fill existing values
     getReviseConfig().then((cfg) => {
       if (cfg.anthropicApiKey) keyInput.value = cfg.anthropicApiKey;
-      if (cfg.anthropicModel)  modelSelect.value = cfg.anthropicModel;
+      if (cfg.anthropicModel) modelSelect.value = cfg.anthropicModel;
     });
 
     // Status text (error red is theme-independent)
@@ -1262,7 +1306,7 @@ async function showSetupModal(onComplete) {
       'border:1px solid var(--modal-secondary-border);background:transparent;' +
       'color:var(--modal-secondary-color);transition:background 0.2s;';
     backBtn.onmouseover = () => backBtn.style.setProperty('background', 'var(--modal-back-hover)');
-    backBtn.onmouseout  = () => (backBtn.style.background = 'transparent');
+    backBtn.onmouseout = () => (backBtn.style.background = 'transparent');
     backBtn.onclick = showModeChoice;
 
     const saveBtn = document.createElement('button');
@@ -1271,7 +1315,7 @@ async function showSetupModal(onComplete) {
       `flex:2;padding:8px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;` +
       `border:none;background:${PURPLE};color:#fff;transition:background 0.2s;`;
     saveBtn.onmouseover = () => (saveBtn.style.background = '#9966ff');
-    saveBtn.onmouseout  = () => (saveBtn.style.background = PURPLE);
+    saveBtn.onmouseout = () => (saveBtn.style.background = PURPLE);
     saveBtn.onclick = async () => {
       const key = keyInput.value.trim();
       if (!key.startsWith('sk-ant-')) {
