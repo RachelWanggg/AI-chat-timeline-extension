@@ -108,6 +108,36 @@ function renderPinnedSection() {
   });
 }
 
+function collectTimelineAnchorIds(timelineData) {
+  const ids = new Set();
+  if (!Array.isArray(timelineData)) return ids;
+  timelineData.forEach((turn) => {
+    if (!Array.isArray(turn.assistantAnchors)) return;
+    turn.assistantAnchors.forEach((anchor) => {
+      if (anchor?.id) ids.add(anchor.id);
+    });
+  });
+  return ids;
+}
+
+function pruneStalePinnedAnchors(timelineData) {
+  if (!Array.isArray(timelineData) || timelineData.length === 0) return;
+  const validIds = collectTimelineAnchorIds(timelineData);
+  let changed = false;
+
+  Array.from(pinnedAnchors.keys()).forEach((id) => {
+    if (!validIds.has(id)) {
+      pinnedAnchors.delete(id);
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    savePinnedAnchors().catch(() => { });
+    renderPinnedSection();
+  }
+}
+
 // ── 防止点击后被滚动事件覆盖高亮
 let isManualClick = false;
 
@@ -233,6 +263,7 @@ function renderEmptyState() {
 // ── 主渲染函数（main render function）
 function renderTimeline(timelineData) {
   lastTimelineData = timelineData; // 保存最新数据，供 togglePin 重渲染用
+  pruneStalePinnedAnchors(timelineData);
   const root = document.getElementById("timeline-root");
   root.innerHTML = ""; // 清空旧内容
 

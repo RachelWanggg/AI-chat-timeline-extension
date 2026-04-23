@@ -5,6 +5,12 @@
 let anchorCounter = 0;
 
 let lastTimelineJSON = "";
+// ChatGPT assistant anchors: anchor id -> stable assistant turn container id
+let assistantAnchorFallbackMap = new Map();
+// 当前时间线里的 assistant anchor id（用于过滤陈旧点击）
+let activeTimelineAnchorIds = new Set();
+// 当前解析周期里的 anchor 元素引用（优先用于精确跳转）
+let anchorElementMap = new Map();
 
 // ── 智能截断（smart truncate）
 // 不在单词中间截断，在最近的空格处截断
@@ -226,6 +232,18 @@ function debounce(fn, delay) {
   };
 }
 
+function collectActiveTimelineAnchorIds(timelineData) {
+  const next = new Set();
+  if (!Array.isArray(timelineData)) return next;
+  timelineData.forEach((turn) => {
+    if (!Array.isArray(turn.assistantAnchors)) return;
+    turn.assistantAnchors.forEach((anchor) => {
+      if (anchor?.id) next.add(anchor.id);
+    });
+  });
+  return next;
+}
+
 // ── 网站适配器（Site Adapter）
 const SITE_ADAPTERS = {
   "chatgpt.com": {
@@ -258,9 +276,19 @@ const SITE_ADAPTERS = {
     },
 
     // 提取助手消息文字, 每一个标题是一个anchor
-    extractAssistantAnchors: (el) => {
+    extractAssistantAnchors: (el, index) => {
       const container = el.querySelector('[data-message-author-role="assistant"]');
-      if (!container) return [];
+      if (!container) {
+        
+        return []
+      } ;
+      
+      // 给整个 assistant turn 一个稳定 id，供 anchor 找不到时回退滚动
+      if (!el.id) {
+        const domId = el.getAttribute("data-turn-id");
+        el.id = domId || `tl-assistant-turn-${index}`;
+      }
+      const turnId = el.id;
 
       // 策略一：寻找 markdown 标题（h1~h3）
       // ChatGPT 会把 ## 标题渲染成 <h2>、<h3>
@@ -269,11 +297,14 @@ const SITE_ADAPTERS = {
       );
 
       if (headings.length > 0) {
-        return headings.map((h) => {
-          if (!h.id || !h.id.startsWith("tl-")) {
-            h.id = `tl-anchor-${anchorCounter++}`; // 每个heading的id
+        return headings.map((h, idx) => {
+          const stableId = `tl-anchor-${turnId}-h${idx}`;
+          if (h.id !== stableId) {
+            h.id = stableId;
           }
-          return { id: h.id, label: h.textContent.trim() };
+          assistantAnchorFallbackMap.set(stableId, { sectionId: el.id, headingIndex: idx, isParagraph: false });
+          anchorElementMap.set(stableId, h);
+          return { id: stableId, label: h.textContent.trim() };
         });
       }
 
@@ -282,10 +313,14 @@ const SITE_ADAPTERS = {
       for (const p of paragraphs) {
         const text = p.textContent.trim();
         if (text.length > 10) { // 过滤掉太短的段落
-          if (!p.id || !p.id.startsWith("tl-")) {
-            p.id = `tl-anchor-${anchorCounter++}`; // 每个<p>的id
+          const stableId = `tl-anchor-${turnId}-p0`;
+          if (p.id !== stableId) {
+            p.id = stableId;
           }
-          return [{ id: p.id, label: smartTruncate(text, 40) }];
+          // 改成存对象
+          assistantAnchorFallbackMap.set(stableId, { sectionId: el.id, headingIndex: 0, isParagraph: true });
+          anchorElementMap.set(stableId, p);
+          return [{ id: stableId, label: smartTruncate(text, 40) }];
         }
       }
 
@@ -348,6 +383,7 @@ function parseClaude() {
           if (!h.id || !h.id.startsWith("tl-")) {
             h.id = `tl-anchor-${anchorCounter++}`;
           }
+          anchorElementMap.set(h.id, h);
           return { id: h.id, label: h.textContent.trim() };
         });
       } else {
@@ -359,6 +395,7 @@ function parseClaude() {
             if (!p.id || !p.id.startsWith("tl-")) {
               p.id = `tl-anchor-${anchorCounter++}`;
             }
+            anchorElementMap.set(p.id, p);
             anchors = [{ id: p.id, label: smartTruncate(text, 40) }];
             break;
           }
@@ -391,8 +428,10 @@ function startClaudeObserver() {
     // 注入保存按钮
     injectSaveButtons();
 
+    anchorElementMap = new Map();
     const parsed = parseClaude();
     const timelineData = buildTimelineData(parsed);
+    activeTimelineAnchorIds = collectActiveTimelineAnchorIds(timelineData);
     console.log("[Timeline] Claude updated:", timelineData.length, "turns");
     sendTimelineToPanel(timelineData);
   }, 800);
@@ -401,21 +440,21 @@ function startClaudeObserver() {
     const hasNewMessage = mutations.some((mutation) =>
       Array.from(mutation.addedNodes).some((node) => {
         if (node.nodeType !== 1) return false;
-  
+
         // ✅ Claude 用户消息
         if (node.matches?.('div[data-testid="user-message"]')) return true;
-  
+
         // ✅ Claude assistant 消息
         if (node.matches?.('div.font-claude-response')) return true;
-  
+
         // ✅ 有时候是包裹层
         if (node.querySelector?.('div[data-testid="user-message"]')) return true;
         if (node.querySelector?.('div.font-claude-response')) return true;
-  
+
         return false;
       })
     );
-  
+
     if (hasNewMessage) {
       console.log("🟢 New Claude message detected");
       injectSaveButtons();   // ✅ 只在新消息时触发
@@ -443,7 +482,10 @@ function getAdapter() {
 
 // ── 解析整个对话，输出扁平列表
 function parseConversation(adapter) {
-  const turns = document.querySelectorAll(adapter.turnSelector);
+  const scope = adapter.containerSelector
+    ? (document.querySelector(adapter.containerSelector) || document)
+    : document;
+  const turns = scope.querySelectorAll(adapter.turnSelector);
   const result = [];
 
   turns.forEach((turn, index) => {
@@ -459,7 +501,7 @@ function parseConversation(adapter) {
         text: extracted.text,
       });
     } else {
-      const anchors = adapter.extractAssistantAnchors(turn);
+      const anchors = adapter.extractAssistantAnchors(turn, index);
       if (anchors.length == 0) return;
       result.push({
         id: `turn-${index}`,
@@ -577,9 +619,11 @@ function startAnchorObserver() {
 
 // ── 核心：解析 + 发送 + 更新 anchor 观察
 function parseAndSend(adapter) {
-
+  assistantAnchorFallbackMap = new Map();
+  anchorElementMap = new Map();
   const parsed = parseConversation(adapter);
   const timelineData = buildTimelineData(parsed);
+  activeTimelineAnchorIds = collectActiveTimelineAnchorIds(timelineData);
   const currentJSON = JSON.stringify(timelineData);
   if (currentJSON === lastTimelineJSON) return;
   lastTimelineJSON = currentJSON;
@@ -634,12 +678,182 @@ function startObserver(adapter) {
   return observer;
 }
 
+function getElementsByExactId(anchorId) {
+  if (window.CSS && CSS.escape) {
+    return Array.from(document.querySelectorAll(`#${CSS.escape(anchorId)}`));
+  }
+  const safeId = anchorId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return Array.from(document.querySelectorAll(`[id="${safeId}"]`));
+}
+
+function hasAncestorWithId(el, ancestorId) {
+  let cur = el;
+  while (cur) {
+    if (cur.id === ancestorId) return true;
+    cur = cur.parentElement;
+  }
+  return false;
+}
+
+function isUsableAnchorElement(el) {
+  if (el.closest('[aria-hidden="true"], [hidden], [inert], .hidden')) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  return el.getClientRects().length > 0;
+}
+
+function findAnchorTargetElement(anchorId, fallbackId = null) {
+  const candidates = getElementsByExactId(anchorId);
+  console.log("[TL DEBUG] getElementsByExactId results:", candidates.length, candidates);
+  if (candidates.length === 0) return null;
+
+  const visible = candidates.filter(isUsableAnchorElement);
+  let pool = visible.length > 0 ? visible : candidates;
+
+  if (fallbackId) {
+    const inSameTurn = pool.filter((el) => hasAncestorWithId(el, fallbackId));
+    if (inSameTurn.length > 0) {
+      pool = inSameTurn;
+    }
+  }
+
+  const inMainConversation = pool.filter((el) =>
+    !!el.closest('main section[data-testid^="conversation-turn"], main div.font-claude-response, main div[data-testid="user-message"]')
+  );
+  if (inMainConversation.length > 0) {
+    pool = inMainConversation;
+  }
+
+  const inMain = pool.filter((el) => !!el.closest("main"));
+  if (inMain.length > 0) {
+    pool = inMain;
+  }
+
+  const picked = pool.reduce((best, el) => {
+    const rect = el.getBoundingClientRect();
+    const dist = Math.abs(rect.top - window.innerHeight * 0.25);
+    if (!best || dist < best.dist) return { el, dist };
+    return best;
+  }, null);
+  return picked ? picked.el : null;
+}
+
+function isScrollableContainer(el) {
+  const style = window.getComputedStyle(el);
+  const overflowY = style.overflowY;
+  const canScrollY = overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay";
+  return canScrollY && el.scrollHeight > el.clientHeight + 1;
+}
+
+function findScrollableAncestor(el) {
+  let cur = el.parentElement;
+  while (cur) {
+    if (isScrollableContainer(cur)) return cur;
+    cur = cur.parentElement;
+  }
+  return null;
+}
+
+// 在复杂容器里优先滚动真实滚动层，避免 scrollIntoView 命中但不滚动
+function scrollElementToTarget(el) {
+  const scrollContainer = findScrollableAncestor(el);
+  console.log("[TL DEBUG] scrollElementToTarget el:", el);
+  console.log("[TL DEBUG] scrollContainer:", scrollContainer);
+  if (!scrollContainer) {
+    el.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    return;
+  }
+
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const targetTop =
+    scrollContainer.scrollTop +
+    (elRect.top - containerRect.top) -
+    scrollContainer.clientHeight * 0.25;
+  const maxScrollTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+
+  scrollContainer.scrollTo({
+    top: Math.min(Math.max(targetTop, 0), maxScrollTop),
+    behavior: "smooth",
+  });
+}
+
+function scrollToAnchorElement(anchorId) {
+  console.log("[TL DEBUG] scrollToAnchorElement called:", anchorId);
+  console.log("[TL DEBUG] activeTimelineAnchorIds has:", activeTimelineAnchorIds.has(anchorId));
+  console.log("[TL DEBUG] fallbackMap has:", assistantAnchorFallbackMap.has(anchorId));
+  console.log("[TL DEBUG] anchorElementMap has:", anchorElementMap.has(anchorId));
+
+  if (anchorId.startsWith("tl-anchor-") && !activeTimelineAnchorIds.has(anchorId)) {
+    console.log("[TL DEBUG] blocked by activeTimelineAnchorIds guard");
+    return false;
+  }
+
+  const fallback = assistantAnchorFallbackMap.get(anchorId) || null;
+  const fallbackId = fallback?.sectionId || null;
+
+  // ── 策略一：直接用 id 在 DOM 里找（React 没有重渲染时有效）
+  const direct = findAnchorTargetElement(anchorId, fallbackId);
+  if (direct && direct.id === anchorId) {
+    // 确认找到的是 heading 本身，不是 fallback section
+    console.log("[TL DEBUG] found direct heading element");
+    scrollElementToTarget(direct);
+    return true;
+  }
+
+  // ── 策略二：从 anchorElementMap 里取存储的节点引用
+  const fromMap = anchorElementMap.get(anchorId);
+  if (fromMap && fromMap.isConnected && isUsableAnchorElement(fromMap)) {
+    console.log("[TL DEBUG] found via anchorElementMap");
+    scrollElementToTarget(fromMap);
+    return true;
+  }
+
+  // ── 策略三：React 重渲染后 id 丢失，用 headingIndex 重新定位
+  if (fallback) {
+    const section = document.getElementById(fallback.sectionId);
+    if (section) {
+      let target = null;
+
+      if (!fallback.isParagraph) {
+        // 重新查询 section 内所有 heading，按 index 取
+        const headings = Array.from(
+          section.querySelectorAll('[data-message-author-role="assistant"] h1, [data-message-author-role="assistant"] h2, [data-message-author-role="assistant"] h3')
+        ).filter(h => !h.closest('pre'));
+        target = headings[fallback.headingIndex] || null;
+        console.log("[TL DEBUG] re-queried headings:", headings.length, "target:", target);
+      } else {
+        // 段落：重新查询第一个有内容的 <p>
+        const container = section.querySelector('[data-message-author-role="assistant"]');
+        if (container) {
+          for (const p of container.querySelectorAll('p')) {
+            if (p.textContent.trim().length > 10) {
+              target = p;
+              break;
+            }
+          }
+        }
+      }
+
+      if (target) {
+        scrollElementToTarget(target);
+        return true;
+      }
+
+      // 最终 fallback：滚到 section 顶部
+      console.log("[TL DEBUG] falling back to section scroll");
+      scrollElementToTarget(section);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // ── 监听跳转指令
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "SCROLL_TO_ANCHOR") {
-    const el = document.getElementById(message.anchorId);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (scrollToAnchorElement(message.anchorId)) {
       console.log("[Timeline] Scrolled to:", message.anchorId);
     } else {
       console.warn("[Timeline] Anchor not found:", message.anchorId);
@@ -679,8 +893,10 @@ function main() {
   // Claude.ai 没有统一 turnSelector，走专用解析路径
   if (window.location.hostname.includes("claude.ai")) {
     injectSaveButtons(); // 立即注入一次，覆盖已存在的消息
+    anchorElementMap = new Map();
     const parsed = parseClaude();
     const timelineData = buildTimelineData(parsed);
+    activeTimelineAnchorIds = collectActiveTimelineAnchorIds(timelineData);
     sendTimelineToPanel(timelineData);
     currentObserver = startClaudeObserver();
     currentAnchorObserver = startAnchorObserver();
