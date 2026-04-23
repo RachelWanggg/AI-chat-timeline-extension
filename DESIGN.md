@@ -36,7 +36,7 @@ Core value:
 - Inject floating `✨ Revise` for composer draft (ChatGPT + Claude.ai)
 - Revision modal supports Copy and Use in Composer
   - ChatGPT: Use in Composer works
-  - Claude.ai: Use in Composer currently not supported (ProseMirror limitation)
+  - Claude.ai: Use in Composer works
 
 ### Prompt Library + Settings
 - Prompt Library CRUD + category + tags + search + inline edit
@@ -66,7 +66,34 @@ Core value:
 timeline-extension/
 ├── manifest.json
 ├── background.js
-├── content.js
+├── content.js                        # Entry point: injects content/index.js
+├── content/
+│   ├── index.js                      # Wires up all modules, registers message listeners
+│   ├── adapters/
+│   │   ├── adapterFactory.js         # Detects host and returns the right adapter
+│   │   ├── chatgptAdapter.js         # ChatGPT-specific DOM parsing + observer
+│   │   └── claudeAdapter.js          # Claude.ai-specific DOM parsing + observer
+│   ├── revise/
+│   │   ├── promptBuilder.js          # Builds the revise prompt string
+│   │   ├── reviseController.js       # Orchestrates revise flow end-to-end
+│   │   └── reviseService.js          # Sends REVISE_VIA_API to background
+│   ├── state/
+│   │   └── store.js                  # Shared mutable state (anchorCounter, currentUrl, etc.)
+│   ├── timeline/
+│   │   ├── anchorManager.js          # Injects/removes tl-anchor-* DOM nodes
+│   │   ├── parser.js                 # Converts raw DOM turns to TimelineTurn[]
+│   │   ├── scrollTracker.js          # IntersectionObserver → ANCHOR_VISIBLE messages
+│   │   └── timelineController.js     # Orchestrates parse → send → observe cycle
+│   ├── ui/
+│   │   ├── actionButtons.js          # Save + Revise buttons injected into message bubbles
+│   │   ├── draftReviseButton.js      # Floating Draft Revise button above composer
+│   │   ├── revisionModal.js          # Revision result modal (Copy / Use in Composer)
+│   │   └── setupModal.js             # API key setup modal
+│   └── utils/
+│       ├── constants.js              # Shared string constants (selectors, message types)
+│       ├── dom.js                    # DOM helpers (waitForElement, etc.)
+│       ├── logger.js                 # [Timeline] prefixed console wrapper
+│       └── text.js                   # Text extraction + truncation helpers
 └── panel/
     ├── sidepanel.html
     ├── sidepanel.css
@@ -74,7 +101,7 @@ timeline-extension/
 ```
 
 Responsibilities:
-- `content.js`: parse page DOM, inject buttons, send timeline updates, handle scroll targets
+- `content.js` + `content/`: parse page DOM, inject buttons, send timeline updates, handle scroll targets
 - `sidepanel.js`: render timeline/pinned/library/settings, maintain fold state
 - `background.js`: side panel open, tab listeners, Anthropic API proxy, prompt save relay
 
@@ -86,7 +113,9 @@ Responsibilities:
 
 ```text
 ChatGPT / Claude DOM
-  -> content.js parse (site adapter + observers)
+  -> content/adapters/* (site adapter + MutationObserver)
+  -> content/timeline/parser.js
+  -> content/timeline/timelineController.js
   -> chrome.runtime.sendMessage(TIMELINE_UPDATE)
   -> sidepanel.js renderTimeline()
 ```
@@ -96,7 +125,8 @@ ChatGPT / Claude DOM
 ```text
 sidepanel click
   -> chrome.tabs.sendMessage(SCROLL_TO_ANCHOR, anchorId)
-  -> content.js find target node + scrollIntoView()
+  -> content/index.js message listener
+  -> anchorManager.js find target node + scrollIntoView()
 ```
 
 ### 5.3 Fold flow (side panel only)
@@ -116,11 +146,13 @@ renderTurn(turn)
 ### 5.4 Revise flow
 
 ```text
-content.js (message revise or draft revise)
+content/ui/actionButtons.js or draftReviseButton.js
+  -> content/revise/reviseController.js
+  -> content/revise/reviseService.js
   -> chrome.runtime.sendMessage(REVISE_VIA_API)
   -> background.js call https://api.anthropic.com/v1/messages
-  -> return revised text to content.js
-  -> show revision modal
+  -> return revised text to content
+  -> content/ui/revisionModal.js show result
 ```
 
 ---

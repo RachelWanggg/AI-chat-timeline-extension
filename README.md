@@ -65,13 +65,40 @@ A Chrome Extension (Manifest V3) that adds a structured **timeline side panel** 
 ## File Structure
 
 ```
-├── manifest.json          # Extension config + permissions
-├── background.js          # Service worker: side panel open, tab events, API proxy
-├── content.js             # DOM parsing + anchor injection + revise/save actions
+├── manifest.json               # Extension config + permissions
+├── background.js               # Service worker: side panel open, tab events, API proxy
+├── content.js                  # Entry point: bootstraps the content/ module tree
+├── content/
+│   ├── index.js                # Wires modules, registers chrome message listeners
+│   ├── adapters/
+│   │   ├── adapterFactory.js   # Detects host site, returns correct adapter
+│   │   ├── chatgptAdapter.js   # ChatGPT DOM parsing + MutationObserver
+│   │   └── claudeAdapter.js    # Claude.ai DOM parsing + MutationObserver
+│   ├── revise/
+│   │   ├── promptBuilder.js    # Builds revise prompt string
+│   │   ├── reviseController.js # Orchestrates revise flow end-to-end
+│   │   └── reviseService.js    # Sends REVISE_VIA_API to background
+│   ├── state/
+│   │   └── store.js            # Shared mutable state (anchorCounter, currentUrl, etc.)
+│   ├── timeline/
+│   │   ├── anchorManager.js    # Injects/removes tl-anchor-* DOM nodes
+│   │   ├── parser.js           # Converts raw DOM turns to TimelineTurn[]
+│   │   ├── scrollTracker.js    # IntersectionObserver → ANCHOR_VISIBLE messages
+│   │   └── timelineController.js # Orchestrates parse → send → observe cycle
+│   ├── ui/
+│   │   ├── actionButtons.js    # Save + Revise buttons in message bubbles
+│   │   ├── draftReviseButton.js # Floating Draft Revise button above composer
+│   │   ├── revisionModal.js    # Revision result modal (Copy / Use in Composer)
+│   │   └── setupModal.js       # API key setup modal
+│   └── utils/
+│       ├── constants.js        # Shared string constants (selectors, message types)
+│       ├── dom.js              # DOM helpers (waitForElement, etc.)
+│       ├── logger.js           # [Timeline] prefixed console wrapper
+│       └── text.js             # Text extraction + truncation helpers
 └── panel/
-    ├── sidepanel.html     # Side panel markup
-    ├── sidepanel.css      # Side panel styles
-    └── sidepanel.js       # Timeline rendering, collapse/pin, settings, prompt library
+    ├── sidepanel.html          # Side panel markup
+    ├── sidepanel.css           # Side panel styles
+    └── sidepanel.js            # Timeline rendering, collapse/pin, settings, prompt library
 ```
 
 ---
