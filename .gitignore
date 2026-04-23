@@ -60,3 +60,5 @@ yarn-error.log*
 .cache/
 
 dist.zip
+
+DESIGN.md
