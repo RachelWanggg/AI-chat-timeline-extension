@@ -234,12 +234,47 @@ body {
   transition: background 0.15s;
 }
 
+.user-anchor-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
 .user-anchor:hover {
   background: var(--hover, rgba(255,255,255,0.04));
 }
 
 [data-theme="light"] .user-anchor:hover {
   background: rgba(0,0,0,0.04);
+}
+
+.fold-toggle-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #a0a8b8);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.fold-toggle-btn:hover {
+  background: var(--hover, rgba(255,255,255,0.04));
+  color: var(--text-color);
+}
+
+[data-theme="light"] .fold-toggle-btn:hover {
+  background: rgba(0,0,0,0.04);
+}
+
+.fold-toggle-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* 左侧圆点指示器 (dot indicator) */

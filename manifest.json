@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Chat Timeline",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Adds structured timeline navigation to AI chat interfaces.",
 
   "icons": {

@@ -37,6 +37,9 @@ let lastTimelineData = [];
 // key: anchorId, value: { id, label, userText }
 let pinnedAnchors = new Map();
 
+// 当前折叠的 turn 集合（默认全部展开）
+const collapsedTurns = new Set();
+
 // ── 当前页面 URL（由 content script 推送）
 // 用来生成 per-conversation storage key
 let currentPageUrl = "unknown";
@@ -138,6 +141,73 @@ function pruneStalePinnedAnchors(timelineData) {
   }
 }
 
+function collectTimelineTurnIds(timelineData) {
+  const ids = new Set();
+  if (!Array.isArray(timelineData)) return ids;
+  timelineData.forEach((turn) => {
+    if (turn?.id) ids.add(turn.id);
+  });
+  return ids;
+}
+
+function syncCollapsedTurns(timelineData) {
+  const validTurnIds = collectTimelineTurnIds(timelineData);
+  Array.from(collapsedTurns).forEach((turnId) => {
+    if (!validTurnIds.has(turnId)) {
+      collapsedTurns.delete(turnId);
+    }
+  });
+  return validTurnIds;
+}
+
+function updateTurnFoldButton(button, isCollapsed) {
+  button.textContent = isCollapsed ? "▸" : "▾";
+  button.title = isCollapsed ? "Expand turn" : "Collapse turn";
+  button.setAttribute("aria-label", isCollapsed ? "Expand turn" : "Collapse turn");
+}
+
+function updateFoldAllButtonState(turnIds = collectTimelineTurnIds(lastTimelineData)) {
+  const foldAllBtn = document.getElementById("fold-all-btn");
+  if (!foldAllBtn) return;
+
+  const hasTurns = turnIds.size > 0;
+  const allCollapsed =
+    hasTurns && Array.from(turnIds).every((turnId) => collapsedTurns.has(turnId));
+
+  foldAllBtn.textContent = allCollapsed ? "⊞ Unfold All" : "⊟ Fold All";
+  foldAllBtn.title = allCollapsed ? "Unfold all turns" : "Fold all turns";
+  foldAllBtn.disabled = !hasTurns;
+}
+
+function toggleAllTurnsCollapse() {
+  const turnIds = collectTimelineTurnIds(lastTimelineData);
+  if (turnIds.size === 0) {
+    updateFoldAllButtonState(turnIds);
+    return;
+  }
+
+  const allCollapsed = Array.from(turnIds).every((turnId) => collapsedTurns.has(turnId));
+  const shouldCollapse = !allCollapsed;
+
+  if (shouldCollapse) {
+    turnIds.forEach((turnId) => collapsedTurns.add(turnId));
+  } else {
+    collapsedTurns.clear();
+  }
+
+  document.querySelectorAll(".assistant-anchors[data-turn-id]").forEach((el) => {
+    if (!turnIds.has(el.dataset.turnId)) return;
+    el.classList.toggle("hidden", shouldCollapse);
+  });
+
+  document.querySelectorAll(".fold-toggle-btn[data-turn-id]").forEach((btn) => {
+    if (!turnIds.has(btn.dataset.turnId)) return;
+    updateTurnFoldButton(btn, shouldCollapse);
+  });
+
+  updateFoldAllButtonState(turnIds);
+}
+
 // ── 防止点击后被滚动事件覆盖高亮
 let isManualClick = false;
 
@@ -187,10 +257,40 @@ function renderTurn(turn) {
   // 渲染用户问题行（user anchor）
   const userRow = document.createElement("div");
   userRow.className = "user-anchor";
-  userRow.innerHTML = `
+  const userMain = document.createElement("div");
+  userMain.className = "user-anchor-main";
+  userMain.innerHTML = `
     <div class="dot"></div>
     <span class="anchor-label">${escapeHtml(turn.userText)}</span>
   `;
+  userRow.appendChild(userMain);
+
+  const hasAssistantAnchors = Array.isArray(turn.assistantAnchors) && turn.assistantAnchors.length > 0;
+  let assistantWrapper = null;
+
+  if (hasAssistantAnchors) {
+    const foldBtn = document.createElement("button");
+    foldBtn.type = "button";
+    foldBtn.className = "fold-toggle-btn";
+    foldBtn.dataset.turnId = turn.id;
+    updateTurnFoldButton(foldBtn, collapsedTurns.has(turn.id));
+    foldBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const shouldCollapse = !collapsedTurns.has(turn.id);
+      if (shouldCollapse) {
+        collapsedTurns.add(turn.id);
+      } else {
+        collapsedTurns.delete(turn.id);
+      }
+      if (assistantWrapper) {
+        assistantWrapper.classList.toggle("hidden", shouldCollapse);
+      }
+      updateTurnFoldButton(foldBtn, shouldCollapse);
+      updateFoldAllButtonState();
+    });
+    userRow.appendChild(foldBtn);
+  }
+
   // 点击事件暂时只打 log，后续会跳转到页面元素
   userRow.addEventListener("click", () => {
     console.log("[Timeline] user anchor clicked:", turn.id);
@@ -203,9 +303,11 @@ function renderTurn(turn) {
   block.appendChild(userRow);
 
   // 渲染助手回复跳转点（assistant anchors）
-  if (turn.assistantAnchors && turn.assistantAnchors.length > 0) {
-    const assistantWrapper = document.createElement("div");
+  if (hasAssistantAnchors) {
+    assistantWrapper = document.createElement("div");
     assistantWrapper.className = "assistant-anchors";
+    assistantWrapper.dataset.turnId = turn.id;
+    assistantWrapper.classList.toggle("hidden", collapsedTurns.has(turn.id));
 
     turn.assistantAnchors.forEach((anchor) => {
       const row = document.createElement("div");
@@ -264,11 +366,13 @@ function renderEmptyState() {
 function renderTimeline(timelineData) {
   lastTimelineData = timelineData; // 保存最新数据，供 togglePin 重渲染用
   pruneStalePinnedAnchors(timelineData);
+  const turnIds = syncCollapsedTurns(timelineData);
   const root = document.getElementById("timeline-root");
   root.innerHTML = ""; // 清空旧内容
 
   if (!timelineData || timelineData.length === 0) {
     root.appendChild(renderEmptyState());
+    updateFoldAllButtonState(turnIds);
     return;
   }
 
@@ -276,6 +380,7 @@ function renderTimeline(timelineData) {
     root.appendChild(renderTurn(turn));
   });
 
+  updateFoldAllButtonState(turnIds);
 }
 
 // ── 工具函数：防止 XSS（escape HTML）
@@ -299,6 +404,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadPromptLibrary();
 
   // ── Prompt 相关事件监听
+  document.getElementById("fold-all-btn").addEventListener("click", toggleAllTurnsCollapse);
   document.getElementById("prompt-library-btn").addEventListener("click", openPromptDrawer);
   document.getElementById("close-prompt-drawer").addEventListener("click", closePromptDrawer);
   document.getElementById("save-prompt-btn").addEventListener("click", handleSavePrompt);
