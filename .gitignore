@@ -62,3 +62,7 @@ yarn-error.log*
 dist.zip
 
 DESIGN.md
+
+dev_log.md
+
+design_doc.md

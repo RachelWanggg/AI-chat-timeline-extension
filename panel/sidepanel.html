@@ -100,15 +100,15 @@
               placeholder="Prompt title (e.g., Code Review)" 
               maxlength="50"
             />
-            <select id="prompt-category-select" class="prompt-category-select">
-              <option value="">Select a category...</option>
-              <option value="Writing">Writing</option>
-              <option value="Coding">Coding</option>
-              <option value="Analysis">Analysis</option>
-              <option value="Brainstorm">Brainstorm</option>
-              <option value="Documentation">Documentation</option>
-              <option value="Other">Other</option>
-            </select>
+            <input
+              type="text"
+              id="prompt-category-input"
+              class="prompt-category-input"
+              list="category-datalist"
+              placeholder="Category (e.g., Coding)"
+              autocomplete="off"
+            />
+            <datalist id="category-datalist"></datalist>
             <input 
               type="text" 
               id="prompt-tags-input" 
@@ -128,12 +128,15 @@
           <hr class="prompt-divider" />
 
           <!-- Search Bar -->
-          <input 
-            type="text" 
-            id="prompt-search-input" 
-            class="prompt-search-input" 
-            placeholder="Search by name or tags..."
+          <input
+            type="text"
+            id="prompt-search-input"
+            class="prompt-search-input"
+            placeholder="Search by name, tags, or category..."
           />
+
+          <!-- Category Filter Chips -->
+          <div id="category-chips" class="category-chips"></div>
 
           <!-- Saved Prompts List -->
           <div class="prompt-list-header">Saved Prompts</div>

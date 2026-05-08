@@ -36,6 +36,7 @@ export function createTimelineController({ adapter, store }) {
       .sendMessage({
         type: MESSAGE_TYPES.TIMELINE_UPDATE,
         payload: timelineData,
+        url: window.location.href,
       })
       .catch(() => {});
   }

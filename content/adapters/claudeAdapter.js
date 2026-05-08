@@ -2,8 +2,6 @@ import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("Adapter.Claude");
 
-let anchorCounter = 0;
-
 function smartTruncate(text, maxLength) {
   if (text.length <= maxLength) return text;
   const truncated = text.slice(0, maxLength);
@@ -52,6 +50,8 @@ export function parseClaude() {
   });
 
   const result = [];
+  let userIdx = 0;
+  let assistantIdx = 0;
 
   allEls.forEach((el) => {
     const isUser = el.matches('div[data-testid="user-message"]');
@@ -59,33 +59,32 @@ export function parseClaude() {
     if (isUser) {
       const node = el.querySelector(".whitespace-pre-wrap");
       if (!node) return;
-      if (!el.id || !el.id.startsWith("tl-")) {
-        el.id = `tl-user-${anchorCounter++}`;
-      }
-      result.push({ id: el.id, role: "user", text: node.textContent.trim(), element: el });
+      // 用 DOM 顺序位置生成稳定 ID，避免 SPA 导航后 counter 漂移
+      const stableId = `tl-user-${userIdx++}`;
+      el.id = stableId;
+      result.push({ id: stableId, role: "user", text: node.textContent.trim(), element: el });
     } else {
       const headings = Array.from(
         el.querySelectorAll(".standard-markdown h1, .standard-markdown h2, .standard-markdown h3")
       ).filter((h) => !h.closest("pre"));
 
+      const aIdx = assistantIdx++;
       let anchors = [];
 
       if (headings.length > 0) {
-        anchors = headings.map((h) => {
-          if (!h.id || !h.id.startsWith("tl-")) {
-            h.id = `tl-anchor-${anchorCounter++}`;
-          }
-          return { id: h.id, label: h.textContent.trim(), element: h };
+        anchors = headings.map((h, hIdx) => {
+          const stableId = `tl-anchor-a${aIdx}-h${hIdx}`;
+          h.id = stableId;
+          return { id: stableId, label: h.textContent.trim(), element: h };
         });
       } else {
         const paragraphs = el.querySelectorAll("p");
         for (const p of paragraphs) {
           const text = p.textContent.trim();
           if (text.length > 10) {
-            if (!p.id || !p.id.startsWith("tl-")) {
-              p.id = `tl-anchor-${anchorCounter++}`;
-            }
-            anchors = [{ id: p.id, label: smartTruncate(text, 40), element: p }];
+            const stableId = `tl-anchor-a${aIdx}-p0`;
+            p.id = stableId;
+            anchors = [{ id: stableId, label: smartTruncate(text, 40), element: p }];
             break;
           }
         }
@@ -94,7 +93,7 @@ export function parseClaude() {
       if (anchors.length === 0) return;
 
       result.push({
-        id: `tl-assistant-${anchorCounter}`,
+        id: `tl-assistant-${aIdx}`,
         role: "assistant",
         anchors,
       });

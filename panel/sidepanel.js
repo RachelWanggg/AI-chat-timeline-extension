@@ -393,7 +393,7 @@ function escapeHtml(str) {
 
 // ── 入口：页面加载完毕后渲染
 document.addEventListener("DOMContentLoaded", () => {
-  loadPinnedAnchors(); // ✅ 加载已保存的 pins
+  renderPinnedSection(); // 初始化时 pins 为空，隐藏 pinned section
   renderTimeline([]);
 
   // ── 加载设置与主题
@@ -462,13 +462,20 @@ document.addEventListener("DOMContentLoaded", () => {
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "TIMELINE_UPDATE") {
       console.log("[Panel] Received timeline data:", message.payload);
-      renderTimeline(message.payload);
+      if (message.url && message.url !== currentPageUrl) {
+        // 对话切换：先加载新对话的 pins，再渲染 timeline（保证 pin 按钮状态正确）
+        currentPageUrl = message.url;
+        console.log("[Panel] Conversation URL:", currentPageUrl);
+        loadPinnedAnchors().then(() => renderTimeline(message.payload));
+      } else {
+        renderTimeline(message.payload);
+      }
     }
     if (message.type === "TIMELINE_CLEAR") {
       console.log("[Panel] URL changed, clearing timeline");
       renderTimeline([]);
-      pinnedAnchors = new Map();     // 清空内存里的 pins
-      loadPinnedAnchors();           // 加载新对话的 pins
+      pinnedAnchors = new Map();
+      renderPinnedSection();
     }
     if (message.type === "ANCHOR_VISIBLE") {
       if (!isManualClick) {
@@ -476,12 +483,6 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    // ── 接收 content script 推送的当前页面 URL
-    if (message.type === "UPDATE_PAGE_URL") {
-      currentPageUrl = message.url;
-      console.log("[Panel] Updated page URL:", currentPageUrl);
-    }
-    
     // background.js 已保存，panel 只需重新从 storage 加载
     if (message.type === "PROMPT_LIBRARY_UPDATED") {
       loadPromptLibrary();
@@ -639,8 +640,10 @@ function openPromptDrawer() {
   modal.style.width = "90%";
   modal.style.height = "80%";
 
+  activeCategory = "All";
   document.getElementById("prompt-title-input").focus();
   document.getElementById("prompt-search-input").value = "";
+  renderPromptList();
 }
 
 /* ══════════════════════════════════════════════════
@@ -649,6 +652,9 @@ function openPromptDrawer() {
 
 // Prompt Library 数据（内存中保存）
 let promptLibrary = [];
+
+// 当前激活的 category filter（"All" 表示不过滤）
+let activeCategory = "All";
 
 // 从 chrome.storage.local 加载已保存的 prompts
 async function loadPromptLibrary() {
@@ -725,33 +731,39 @@ function editPrompt(id) {
   // 标记为编辑模式
   item.classList.add("editing");
 
+  // 编辑表单用到的 datalist options（来自当前 library）
+  const editDatalistId = `edit-category-datalist-${id}`;
+  const categoryOptions = getUniqueSortedCategories()
+    .map((cat) => `<option value="${escapeHtml(cat)}">`)
+    .join("");
+
   // 创建编辑表单
   const form = document.createElement("div");
   form.className = "prompt-edit-form";
   const tagsString = prompt.tags.join(", ");
   form.innerHTML = `
-    <input 
-      type="text" 
-      class="prompt-title-input edit-title" 
+    <input
+      type="text"
+      class="prompt-title-input edit-title"
       value="${escapeHtml(prompt.title)}"
       maxlength="50"
     />
-    <select class="prompt-category-select edit-category">
-      <option value="">Select a category...</option>
-      <option value="Writing" ${prompt.category === "Writing" ? "selected" : ""}>Writing</option>
-      <option value="Coding" ${prompt.category === "Coding" ? "selected" : ""}>Coding</option>
-      <option value="Analysis" ${prompt.category === "Analysis" ? "selected" : ""}>Analysis</option>
-      <option value="Brainstorm" ${prompt.category === "Brainstorm" ? "selected" : ""}>Brainstorm</option>
-      <option value="Documentation" ${prompt.category === "Documentation" ? "selected" : ""}>Documentation</option>
-      <option value="Other" ${prompt.category === "Other" ? "selected" : ""}>Other</option>
-    </select>
-    <input 
-      type="text" 
-      class="prompt-tags-input edit-tags" 
+    <input
+      type="text"
+      class="prompt-category-input edit-category"
+      list="${editDatalistId}"
+      value="${escapeHtml(prompt.category)}"
+      placeholder="Category (e.g., Coding)"
+      autocomplete="off"
+    />
+    <datalist id="${editDatalistId}">${categoryOptions}</datalist>
+    <input
+      type="text"
+      class="prompt-tags-input edit-tags"
       value="${escapeHtml(tagsString)}"
       placeholder="Add tags (comma-separated)"
     />
-    <textarea 
+    <textarea
       class="prompt-textarea edit-text"
       rows="4"
     >${escapeHtml(prompt.text)}</textarea>
@@ -805,7 +817,7 @@ function editPrompt(id) {
 // 清空 prompt 表单
 function clearPromptForm() {
   document.getElementById("prompt-title-input").value = "";
-  document.getElementById("prompt-category-select").value = "";
+  document.getElementById("prompt-category-input").value = "";
   document.getElementById("prompt-tags-input").value = "";
   document.getElementById("prompt-textarea").value = "";
 }
@@ -813,20 +825,10 @@ function clearPromptForm() {
 // 处理保存新 prompt
 async function handleSavePrompt() {
   const title = document.getElementById("prompt-title-input").value;
-  const category = document.getElementById("prompt-category-select").value;
+  const category = document.getElementById("prompt-category-input").value;
   const tags = document.getElementById("prompt-tags-input").value;
   const text = document.getElementById("prompt-textarea").value;
   await addPrompt(title, text, category, tags);
-}
-
-// 打开 Prompt Library 抽屉
-function openPromptDrawer() {
-  const drawer = document.getElementById("prompt-drawer");
-  drawer.classList.remove("hidden");
-  // 聚焦到 title 输入框
-  document.getElementById("prompt-title-input").focus();
-  // Clear search when opening
-  document.getElementById("prompt-search-input").value = "";
 }
 
 // 关闭 Prompt Library 抽屉
@@ -835,23 +837,27 @@ function closePromptDrawer() {
   drawer.classList.add("hidden");
   clearPromptForm();
   document.getElementById("prompt-search-input").value = "";
+  activeCategory = "All";
 }
 
-// 搜索/过滤 prompts
+// 搜索/过滤 prompts（搜索 AND 分类双重过滤）
 function filterPrompts(searchQuery) {
-  if (!searchQuery.trim()) {
-    return promptLibrary;
+  let results = promptLibrary;
+
+  // 按 category chip 过滤
+  if (activeCategory !== "All") {
+    results = results.filter((p) => p.category === activeCategory);
   }
 
+  if (!searchQuery.trim()) return results;
+
   const query = searchQuery.toLowerCase();
-  return promptLibrary.filter((prompt) => {
-    // 搜索标题
+  return results.filter((prompt) => {
     const matchTitle = prompt.title.toLowerCase().includes(query);
-    // 搜索标签
     const matchTags = prompt.tags.some((tag) => tag.includes(query));
-    // 搜索分类
     const matchCategory = prompt.category.toLowerCase().includes(query);
-    return matchTitle || matchTags || matchCategory;
+    const matchText = prompt.text.toLowerCase().includes(query);
+    return matchTitle || matchTags || matchCategory || matchText;
   });
 }
 
@@ -861,8 +867,53 @@ function handleSearchPrompts(e) {
   renderPromptList(query);
 }
 
+// 所有唯一分类（按字母排序）
+function getUniqueSortedCategories() {
+  const cats = new Set(promptLibrary.map((p) => p.category || "Other"));
+  return Array.from(cats).sort((a, b) => a.localeCompare(b));
+}
+
+// 渲染 category filter chips
+function renderCategoryChips() {
+  const container = document.getElementById("category-chips");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const categories = getUniqueSortedCategories();
+  if (categories.length === 0) return;
+
+  const allChipLabels = ["All", ...categories];
+  allChipLabels.forEach((label) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "category-chip" + (label === activeCategory ? " active" : "");
+    chip.textContent = label;
+    chip.addEventListener("click", () => {
+      activeCategory = label;
+      renderCategoryChips();
+      renderPromptList(document.getElementById("prompt-search-input").value);
+    });
+    container.appendChild(chip);
+  });
+}
+
+// 同步 <datalist> 选项，供 category text input 自动补全
+function updateCategoryDatalist() {
+  const datalist = document.getElementById("category-datalist");
+  if (!datalist) return;
+  datalist.innerHTML = "";
+  getUniqueSortedCategories().forEach((cat) => {
+    const opt = document.createElement("option");
+    opt.value = cat;
+    datalist.appendChild(opt);
+  });
+}
+
 // 渲染 Prompt 列表
 function renderPromptList(searchQuery = "") {
+  renderCategoryChips();
+  updateCategoryDatalist();
+
   const list = document.getElementById("prompt-list");
   list.innerHTML = "";
 

@@ -639,7 +639,7 @@ body {
 
 /* Form inputs */
 .prompt-title-input,
-.prompt-category-select,
+.prompt-category-input,
 .prompt-tags-input,
 .prompt-textarea,
 .prompt-search-input {
@@ -658,23 +658,15 @@ body {
 }
 
 .prompt-title-input::placeholder,
+.prompt-category-input::placeholder,
 .prompt-tags-input::placeholder,
 .prompt-textarea::placeholder,
 .prompt-search-input::placeholder {
   color: var(--placeholder-color);
 }
 
-.prompt-category-select {
-  cursor: pointer;
-}
-
-.prompt-category-select option {
-  background: var(--bg-color);
-  color: var(--text-color);
-}
-
 .prompt-title-input:focus,
-.prompt-category-select:focus,
+.prompt-category-input:focus,
 .prompt-tags-input:focus,
 .prompt-textarea:focus,
 .prompt-search-input:focus {
@@ -684,6 +676,37 @@ body {
 
 .prompt-textarea {
   min-height: 80px;
+}
+
+/* Category filter chips */
+.category-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.category-chip {
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--input-border);
+  background: transparent;
+  color: var(--text-secondary, #aaa);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.category-chip:hover {
+  border-color: #5b9cf6;
+  color: #5b9cf6;
+}
+
+.category-chip.active {
+  background: #5b9cf6;
+  border-color: #5b9cf6;
+  color: #fff;
 }
 
 /* Save button */
@@ -870,7 +893,7 @@ body {
 }
 
 .prompt-edit-form .prompt-title-input,
-.prompt-edit-form .prompt-category-select,
+.prompt-edit-form .prompt-category-input,
 .prompt-edit-form .prompt-tags-input,
 .prompt-edit-form .prompt-textarea {
   margin-bottom: 0;
