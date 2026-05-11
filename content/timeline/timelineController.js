@@ -31,12 +31,27 @@ export function createTimelineController({ adapter, store }) {
     };
   }
 
+  function computeContextStats() {
+    let totalChars = 0;
+    if (adapter.id === "claude") {
+      document
+        .querySelectorAll('div[data-testid="user-message"], div.font-claude-response')
+        .forEach((el) => { totalChars += el.textContent.length; });
+    } else {
+      document
+        .querySelectorAll("[data-message-author-role]")
+        .forEach((el) => { totalChars += el.textContent.length; });
+    }
+    return { estimatedChars: totalChars, platform: adapter.id };
+  }
+
   function emitTimelineUpdate(timelineData) {
     chrome.runtime
       .sendMessage({
         type: MESSAGE_TYPES.TIMELINE_UPDATE,
         payload: timelineData,
         url: window.location.href,
+        contextStats: computeContextStats(),
       })
       .catch(() => {});
   }

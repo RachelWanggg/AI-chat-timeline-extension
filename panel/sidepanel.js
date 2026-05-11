@@ -383,6 +383,33 @@ function renderTimeline(timelineData) {
   updateFoldAllButtonState(turnIds);
 }
 
+// ── Context compaction progress bar
+const CONTEXT_LIMITS = { claude: 200000, chatgpt: 128000 };
+
+function renderContextBar(contextStats) {
+  const bar = document.getElementById("context-bar");
+  if (!contextStats || !contextStats.estimatedChars) {
+    bar.classList.add("hidden");
+    return;
+  }
+  const { estimatedChars, platform } = contextStats;
+  const estimatedTokens = Math.round(estimatedChars / 3.5);
+  const limit = CONTEXT_LIMITS[platform] || 128000;
+  const pct = Math.min(estimatedTokens / limit, 1);
+
+  const fill = document.getElementById("context-bar-fill");
+  const label = document.getElementById("context-bar-label");
+  const avatar = document.getElementById("context-bar-avatar");
+  fill.style.width = `${(pct * 100).toFixed(1)}%`;
+  fill.className = "context-bar-fill" +
+    (pct >= 0.8 ? " danger" : pct >= 0.6 ? " warn" : "");
+  avatar.style.left = pct === 0 ? "0px" : `calc(${(pct * 100).toFixed(1)}% - 8px)`;
+  const kTokens = (estimatedTokens / 1000).toFixed(0);
+  const kLimit = (limit / 1000).toFixed(0);
+  label.textContent = `~${kTokens}k / ${kLimit}k tokens`;
+  bar.classList.remove("hidden");
+}
+
 // ── 工具函数：防止 XSS（escape HTML）
 // 在 interview 中，这个叫做 output encoding / HTML sanitization
 function escapeHtml(str) {
@@ -462,6 +489,7 @@ document.addEventListener("DOMContentLoaded", () => {
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "TIMELINE_UPDATE") {
       console.log("[Panel] Received timeline data:", message.payload);
+      renderContextBar(message.contextStats);
       if (message.url && message.url !== currentPageUrl) {
         // 对话切换：先加载新对话的 pins，再渲染 timeline（保证 pin 按钮状态正确）
         currentPageUrl = message.url;
@@ -474,6 +502,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (message.type === "TIMELINE_CLEAR") {
       console.log("[Panel] URL changed, clearing timeline");
       renderTimeline([]);
+      renderContextBar(null);
       pinnedAnchors = new Map();
       renderPinnedSection();
     }
