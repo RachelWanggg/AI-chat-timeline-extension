@@ -1,8 +1,10 @@
 import { createLogger } from "../utils/logger.js";
 
 /**
- * Anchor manager: map anchor ids to DOM nodes and perform scrolling.
- * Does NOT parse turns and does NOT decide active state policy.
+ * Anchor resolver: 把 anchorId 解析成当前活的 DOM 节点。
+ * 不滚动、不挂载、不决定 active 状态 —— 滚动与虚拟化挂载由 scrollEngine 负责。
+ *
+ * 核心原则：每次都重新查询，永不返回已脱离文档（虚拟化卸载 / 重渲染替换）的缓存节点。
  */
 export function createAnchorManager() {
   const logger = createLogger("AnchorManager");
@@ -30,12 +32,26 @@ export function createAnchorManager() {
     fallbackMap.set(anchorId, fallbackMeta);
   }
 
+  // anchorId 形如 `tl-anchor-<uuid>-h3` / `tl-anchor-<uuid>-p0`。
+  // uuid 本身含连字符，但后缀 `-h\d+` / `-p\d+` 是无歧义的，可安全剥离。
+  function deriveMessageId(anchorId) {
+    const meta = fallbackMap.get(anchorId);
+    if (meta?.sectionId) return meta.sectionId;
+    const m = String(anchorId || "").match(/^tl-anchor-(.+)-(?:h\d+|p\d+)$/);
+    if (m) return m[1];
+    // 用户消息 anchor 的 id 本身就是 message id（UUID），直接返回。
+    return anchorId || null;
+  }
+
   function findSection(sectionId) {
     // getElementById fails when React re-renders because it resets our dynamically-set id.
-    // data-turn-id is in ChatGPT's own JSX and survives re-renders, so try it as backup.
+    // Try data-tl-message-id first (set by upsertUserFromDom / upsertAssistantFromDom),
+    // then data-turn-id (ChatGPT's own JSX attr，虚拟化占位也保留), then data-message-id.
     return (
       document.getElementById(sectionId) ||
-      document.querySelector(`[data-turn-id="${CSS.escape(sectionId)}"]`)
+      document.querySelector(`[data-tl-message-id="${CSS.escape(sectionId)}"]`) ||
+      document.querySelector(`[data-turn-id="${CSS.escape(sectionId)}"]`) ||
+      document.querySelector(`[data-message-id="${CSS.escape(sectionId)}"]`)
     );
   }
 
@@ -66,36 +82,47 @@ export function createAnchorManager() {
     const headings = Array.from(root.querySelectorAll("h1, h2, h3")).filter(
       (h) => !h.closest("pre")
     );
-    const heading = headings[fallback.headingIndex || 0];
+    // Prefer text-based match: positional index drifts when React re-renders mid-stream.
+    // 文本对不上（流式半截）时退回 index 兜底；scrollEngine 的 settle 会在文本补全后重定位。
+    let heading = null;
+    if (fallback.headingText) {
+      heading = headings.find((h) => h.textContent.trim() === fallback.headingText);
+    }
+    if (!heading) heading = headings[fallback.headingIndex || 0];
     if (!heading) return null;
     anchorMap.set(anchorId, heading);
     heading.dataset.tlAnchorId = anchorId;
     return heading;
   }
 
+  // 始终重新查询：永不返回已脱离文档（虚拟化卸载）的缓存节点。
+  // 解析顺序：text-based fallback（最稳） → data-tl-anchor-id → 注入的 id/section → 已连接缓存。
   function getElement(anchorId) {
-    // Check isConnected: React re-renders replace DOM nodes, leaving stale refs in the map.
+    // 1) 文本/结构 fallback 重查（重渲染后最可靠，因为 ChatGPT 会丢掉我们注入的 id）
+    const byFallback = resolveFromFallback(anchorId);
+    if (byFallback?.isConnected) return byFallback;
+
+    // 2) 我们注入的属性（同一帧内尚未被重渲染清除时命中）
+    const byAttr = document.querySelector(`[data-tl-anchor-id="${CSS.escape(anchorId)}"]`);
+    if (byAttr?.isConnected) return byAttr;
+
+    // 3) anchorId 恰好等于注入的 heading id；或退化到 section
+    const directSection = findSection(anchorId);
+    if (directSection?.isConnected) {
+      anchorMap.set(anchorId, directSection);
+      directSection.dataset.tlAnchorId = anchorId;
+      return directSection;
+    }
+
+    // 4) 仅当仍连接时才用缓存
     const cached = anchorMap.get(anchorId);
     if (cached?.isConnected) return cached;
 
-    const byAttr = document.querySelector(`[data-tl-anchor-id="${anchorId}"]`);
-    if (byAttr) return byAttr;
-
-    return resolveFromFallback(anchorId);
-  }
-
-  function scrollTo(anchorId) {
-    const el = getElement(anchorId);
-    if (!el) {
-      logger.warn("anchor not found:", anchorId);
-      return false;
-    }
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    return true;
+    return null;
   }
 
   function debugSize() {
-    logger.debug("anchor count:", anchorMap.size);
+    logger.debug("anchor count:", anchorMap.size, "fallback count:", fallbackMap.size);
   }
 
   return {
@@ -104,7 +131,7 @@ export function createAnchorManager() {
     unregister,
     clear,
     getElement,
-    scrollTo,
+    deriveMessageId,
     debugSize,
   };
 }

@@ -96,9 +96,12 @@ function renderPinnedSection() {
       </div>
     `;
 
-    // 点击跳转
+    // 点击跳转：乐观高亮 + 跳转，并在 settle 期间忽略观测回报，避免途中闪烁
     item.querySelector(".pinned-label").addEventListener("click", () => {
+      isManualClick = true;
+      setActiveAnchor(id);
       scrollToAnchor(id);
+      setTimeout(() => { isManualClick = false; }, 1600);
     });
 
     // 点击取消 pin
@@ -210,16 +213,33 @@ function toggleAllTurnsCollapse() {
 
 // ── 防止点击后被滚动事件覆盖高亮
 let isManualClick = false;
+let lastActiveAnchorId = null;
+
+function isElementInView(el, container) {
+  if (!el || !container) return true;
+  const r = el.getBoundingClientRect();
+  const cr = container.getBoundingClientRect();
+  return r.top >= cr.top && r.bottom <= cr.bottom;
+}
 
 // ── 设置当前高亮 anchor（点击 + 滚动共用）
 function setActiveAnchor(anchorId) {
+  if (!anchorId) return;
+  if (anchorId === lastActiveAnchorId) return; // 避免重复高亮导致闪烁
+  lastActiveAnchorId = anchorId;
+
   document.querySelectorAll(".active").forEach((el) => el.classList.remove("active"));
   const el =
     document.querySelector(`[data-anchor-id="${anchorId}"]`) ||
     document.querySelector(`[data-turn-id="${anchorId}"]`);
   if (el) {
     el.classList.add("active");
-    el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+    // 只有当高亮项不在可视区时才滚动，避免持续 scrollIntoView 引发抖动
+    const root = document.getElementById("timeline-root");
+    if (root && !isElementInView(el, root)) {
+      el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   }
 }
 
@@ -297,7 +317,7 @@ function renderTurn(turn) {
     isManualClick = true;
     setActiveAnchor(turn.id);
     scrollToAnchor(turn.id);
-    setTimeout(() => { isManualClick = false; }, 1000);
+    setTimeout(() => { isManualClick = false; }, 1600);
   });
 
   block.appendChild(userRow);
@@ -324,7 +344,7 @@ function renderTurn(turn) {
         isManualClick = true;
         setActiveAnchor(anchor.id);
         scrollToAnchor(anchor.id);
-        setTimeout(() => { isManualClick = false; }, 1000);
+        setTimeout(() => { isManualClick = false; }, 1600);
       });
 
       // ── 右侧：pin 按钮 ✅ 正确位置
@@ -362,8 +382,34 @@ function renderEmptyState() {
   return el;
 }
 
+function isSameTimeline(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const ta = a[i];
+    const tb = b[i];
+    if (!ta || !tb) return false;
+    if (ta.id !== tb.id) return false;
+    if (ta.userText !== tb.userText) return false;
+    const aa = Array.isArray(ta.assistantAnchors) ? ta.assistantAnchors : [];
+    const ab = Array.isArray(tb.assistantAnchors) ? tb.assistantAnchors : [];
+    if (aa.length !== ab.length) return false;
+    for (let j = 0; j < aa.length; j++) {
+      if (aa[j]?.id !== ab[j]?.id) return false;
+      if (aa[j]?.label !== ab[j]?.label) return false;
+    }
+  }
+  return true;
+}
+
 // ── 主渲染函数（main render function）
 function renderTimeline(timelineData) {
+  // 如果数据没变，不重渲染，避免闪烁
+  if (isSameTimeline(timelineData, lastTimelineData)) {
+    return;
+  }
+
   lastTimelineData = timelineData; // 保存最新数据，供 togglePin 重渲染用
   pruneStalePinnedAnchors(timelineData);
   const turnIds = syncCollapsedTurns(timelineData);
@@ -385,25 +431,127 @@ function renderTimeline(timelineData) {
 
 // ── Context compaction progress bar
 const CONTEXT_LIMITS = { claude: 200000, chatgpt: 128000 };
+const CONTEXT_STAGES = ["normal", "getting", "soon", "now", "limit"];
+const CONTEXT_STAGE_FLOORS = {
+  normal: 0,
+  getting: 0.6,
+  soon: 0.8,
+  now: 0.9,
+  limit: 0.98,
+};
+const CONTEXT_STAGE_DEMOTION_FLOORS = {
+  normal: 0,
+  getting: 0.58,
+  soon: 0.78,
+  now: 0.88,
+  limit: 0.96,
+};
+const CONTEXT_HINTS = {
+  normal: "",
+  getting: "Context is getting full",
+  soon: "Almost full, compact soon",
+  now: "Nearly full, compact now",
+  limit: "At limit, compact before continuing",
+};
+const COMPACT_PROMPT_TEMPLATE =
+  "Please compact this conversation before we continue. Keep only key decisions, constraints, unresolved questions, and next steps in concise bullet points.";
+
+let currentContextStage = "normal";
+let latestContextPlatform = "chatgpt";
+let compactButtonResetTimer = null;
+
+function getBaseContextStage(pct) {
+  if (pct >= CONTEXT_STAGE_FLOORS.limit) return "limit";
+  if (pct >= CONTEXT_STAGE_FLOORS.now) return "now";
+  if (pct >= CONTEXT_STAGE_FLOORS.soon) return "soon";
+  if (pct >= CONTEXT_STAGE_FLOORS.getting) return "getting";
+  return "normal";
+}
+
+function resolveContextStage(pct) {
+  const nextStage = getBaseContextStage(pct);
+  const currentRank = CONTEXT_STAGES.indexOf(currentContextStage);
+  const nextRank = CONTEXT_STAGES.indexOf(nextStage);
+
+  if (nextRank >= currentRank) {
+    currentContextStage = nextStage;
+    return currentContextStage;
+  }
+
+  if (pct < CONTEXT_STAGE_DEMOTION_FLOORS[currentContextStage]) {
+    currentContextStage = nextStage;
+  }
+  return currentContextStage;
+}
+
+function getCompactPrompt(platform) {
+  if (platform === "claude") {
+    return `${COMPACT_PROMPT_TEMPLATE}\n\nFormat for Claude: short, structured, and continuation-ready.`;
+  }
+  return `${COMPACT_PROMPT_TEMPLATE}\n\nFormat for ChatGPT: short, structured, and continuation-ready.`;
+}
+
+async function handleCompactNowClick() {
+  const compactBtn = document.getElementById("context-compact-btn");
+  if (!compactBtn) return;
+
+  if (!navigator.clipboard?.writeText) {
+    compactBtn.textContent = "Clipboard unavailable";
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(getCompactPrompt(latestContextPlatform));
+    compactBtn.textContent = "Copied compact prompt";
+    compactBtn.classList.add("success");
+  } catch (error) {
+    compactBtn.textContent = "Copy failed";
+    compactBtn.classList.remove("success");
+    console.log("[Panel] Copy compact prompt failed:", error?.message || error);
+  }
+
+  clearTimeout(compactButtonResetTimer);
+  compactButtonResetTimer = setTimeout(() => {
+    compactBtn.textContent = "Compact now";
+    compactBtn.classList.remove("success");
+  }, 1800);
+}
 
 function renderContextBar(contextStats) {
   const bar = document.getElementById("context-bar");
   if (!contextStats || !contextStats.estimatedChars) {
     bar.classList.add("hidden");
+    currentContextStage = "normal";
     return;
   }
   const { estimatedChars, platform } = contextStats;
+  latestContextPlatform = platform || "chatgpt";
   const estimatedTokens = Math.round(estimatedChars / 3.5);
   const limit = CONTEXT_LIMITS[platform] || 128000;
   const pct = Math.min(estimatedTokens / limit, 1);
+  const stage = resolveContextStage(pct);
 
   const fill = document.getElementById("context-bar-fill");
+  const hint = document.getElementById("context-bar-hint");
   const label = document.getElementById("context-bar-label");
   const avatar = document.getElementById("context-bar-avatar");
+  const trackWrapper = document.getElementById("context-bar-track-wrapper");
+  const compactBtn = document.getElementById("context-compact-btn");
   fill.style.width = `${(pct * 100).toFixed(1)}%`;
   fill.className = "context-bar-fill" +
-    (pct >= 0.8 ? " danger" : pct >= 0.6 ? " warn" : "");
+    (stage === "soon" ? " warn" : stage === "now" || stage === "limit" ? " danger" : "");
   avatar.style.left = pct === 0 ? "0px" : `calc(${(pct * 100).toFixed(1)}% - 8px)`;
+  avatar.className = "context-bar-avatar" +
+    (stage === "soon" ? " warn" : stage === "now" ? " danger" : stage === "limit" ? " limit" : "");
+  trackWrapper.classList.toggle("badge", stage === "soon" || stage === "now" || stage === "limit");
+  hint.textContent = CONTEXT_HINTS[stage];
+
+  compactBtn.classList.toggle("hidden", !(stage === "now" || stage === "limit"));
+  if (stage !== "now" && stage !== "limit") {
+    compactBtn.textContent = "Compact now";
+    compactBtn.classList.remove("success");
+  }
+
   const kTokens = (estimatedTokens / 1000).toFixed(0);
   const kLimit = (limit / 1000).toFixed(0);
   label.textContent = `~${kTokens}k / ${kLimit}k tokens`;
@@ -436,6 +584,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("close-prompt-drawer").addEventListener("click", closePromptDrawer);
   document.getElementById("save-prompt-btn").addEventListener("click", handleSavePrompt);
   document.getElementById("prompt-search-input").addEventListener("input", handleSearchPrompts);
+  document.getElementById("context-compact-btn").addEventListener("click", handleCompactNowClick);
 
   // ── 设置相关
   document.getElementById("settings-btn").addEventListener("click", () => {
