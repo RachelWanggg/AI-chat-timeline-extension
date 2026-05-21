@@ -72,13 +72,19 @@
     <!-- 上下文用量进度条 (context compaction bar) -->
     <div id="context-bar" class="context-bar hidden">
       <div class="context-bar-inner">
-        <div class="context-bar-track-wrapper">
+        <div id="context-bar-track-wrapper" class="context-bar-track-wrapper">
           <div class="context-bar-track">
             <div id="context-bar-fill" class="context-bar-fill"></div>
           </div>
           <img id="context-bar-avatar" class="context-bar-avatar" src="../icons/context_progress_img.png">
         </div>
-        <span id="context-bar-label" class="context-bar-label"></span>
+        <div class="context-bar-meta">
+          <span id="context-bar-hint" class="context-bar-hint"></span>
+          <div class="context-bar-action-row">
+            <button id="context-compact-btn" class="context-compact-btn hidden" type="button">Compact now</button>
+            <span id="context-bar-label" class="context-bar-label"></span>
+          </div>
+        </div>
       </div>
     </div>
 

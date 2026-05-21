@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "AI Chat Timeline",
-  "version": "0.2.2",
+  "version": "0.3.1",
   "description": "Adds structured timeline navigation to AI chat interfaces, works on ChatGPT and Claude.ai",
   "icons": {
     "128": "icons/icon.jpeg"
   },
   "permissions": [
     "sidePanel",
-    "storage"
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
     "https://api.anthropic.com/*"
@@ -43,6 +44,17 @@
   ],
   
   "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*"
+      ],
+      "js": [
+        "content/chatgptFetchInterceptor.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": [
         "https://chatgpt.com/*",

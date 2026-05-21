@@ -2,6 +2,41 @@ import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("Adapter.ChatGPT");
 
+function normalizeText(text) {
+  return String(text || "")
+    .replace(/\u200b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function resolveUserNode(el) {
+  if (!el) return null;
+  if (el.matches?.('[data-message-author-role="user"]')) return el;
+  return el.querySelector?.('[data-message-author-role="user"]') || el;
+}
+
+function resolveAssistantNode(el) {
+  if (!el) return null;
+  if (el.matches?.('[data-message-author-role="assistant"]')) return el;
+  return el.querySelector?.('[data-message-author-role="assistant"]') || el;
+}
+
+function resolveTurnSection(el) {
+  if (!el) return null;
+  if (el.matches?.('section[data-testid^="conversation-turn"]')) return el;
+  return el.closest?.('section[data-testid^="conversation-turn"]') || el;
+}
+
+function resolveMessageId(el, role) {
+  if (!el) return null;
+  const roleSelector = role
+    ? `[data-message-id][data-message-author-role="${role}"]`
+    : "[data-message-id]";
+  if (el.matches?.(roleSelector)) return el.getAttribute?.("data-message-id") || null;
+  const node = el.querySelector?.(roleSelector) || el.querySelector?.("[data-message-id]");
+  return node?.getAttribute?.("data-message-id") || null;
+}
+
 function smartTruncate(text, maxLength) {
   if (text.length <= maxLength) return text;
   const truncated = text.slice(0, maxLength);
@@ -17,25 +52,44 @@ export const chatgptAdapter = {
   messageSelectors: ['section[data-testid^="conversation-turn"]'],
 
   isUserTurn(el) {
-    return el.getAttribute("data-turn") === "user";
+    const turnSection = resolveTurnSection(el);
+    return (
+      turnSection?.getAttribute("data-turn") === "user" ||
+      Boolean(turnSection?.querySelector?.('[data-message-author-role="user"]'))
+    );
   },
 
   extractUserText(el) {
-    const node = el.querySelector(".whitespace-pre-wrap");
-    if (!node) return null;
-    const domId = el.getAttribute("data-turn-id");
-    if (domId && !el.id) el.id = domId;
-    return { text: node.textContent.trim(), domId: domId || null };
+    const turnSection = resolveTurnSection(el);
+    const userNode = resolveUserNode(turnSection);
+    if (!turnSection || !userNode) return null;
+
+    const node = userNode.querySelector?.(".whitespace-pre-wrap") || 
+                 userNode.querySelector?.('[data-testid="collapsible-user-message-content"]') || 
+                 userNode;
+    let text = normalizeText(node.textContent || node.innerText || "");
+    if (!text) {
+      text = normalizeText(userNode.textContent || userNode.innerText || "");
+    }
+    if (!text) return null;
+
+    // 统一使用 data-message-id 作为唯一标识
+    const messageId = resolveMessageId(userNode, "user") || resolveMessageId(turnSection, "user");
+    return { text, domId: messageId || null };
   },
 
   extractAssistantAnchors(el, index) {
-    const container = el.querySelector('[data-message-author-role="assistant"]');
-    if (!container) return [];
-    if (!el.id) {
-      const domId = el.getAttribute("data-turn-id");
-      el.id = domId || `tl-assistant-turn-${index}`;
-    }
-    const turnId = el.id;
+    const turnSection = resolveTurnSection(el);
+    const assistantNode = resolveAssistantNode(turnSection);
+    if (!turnSection || !assistantNode) return [];
+
+    const container = assistantNode.querySelector?.(".standard-markdown") || assistantNode;
+
+    // 统一使用 data-message-id 作为唯一标识
+    const messageId =
+      resolveMessageId(assistantNode, "assistant") ||
+      resolveMessageId(turnSection, "assistant");
+    if (!messageId) return [];
 
     const headings = Array.from(container.querySelectorAll("h1, h2, h3")).filter(
       (h) => !h.closest("pre")
@@ -43,15 +97,17 @@ export const chatgptAdapter = {
 
     if (headings.length > 0) {
       return headings.map((h, idx) => {
-        const stableId = `tl-anchor-${turnId}-h${idx}`;
+        const stableId = `tl-anchor-${messageId}-h${idx}`;
         if (h.id !== stableId) h.id = stableId;
+        const label = h.textContent.trim();
         return {
           id: stableId,
-          label: h.textContent.trim(),
+          label,
           element: h,
           fallback: {
-            sectionId: el.id,
+            sectionId: messageId,
             headingIndex: idx,
+            headingText: label,
             isParagraph: false,
             containerSelector: '[data-message-author-role="assistant"]',
           },
@@ -61,16 +117,23 @@ export const chatgptAdapter = {
 
     const paragraphs = container.querySelectorAll("p");
     for (const p of paragraphs) {
-      const text = p.textContent.trim();
+      const text = normalizeText(p.textContent || p.innerText || "");
       if (text.length > 10) {
-        const stableId = `tl-anchor-${turnId}-p0`;
+        const stableId = `tl-anchor-${messageId}-p0`;
         if (p.id !== stableId) p.id = stableId;
+
+        // 流式输出时段落内容会不断变化，label 跟着变会导致 side panel 不停重渲染/闪烁。
+        // 所以这里“首取一次后冻结”。
+        const frozenLabel =
+          p.dataset.tlAnchorLabel || smartTruncate(text, 40);
+        if (!p.dataset.tlAnchorLabel) p.dataset.tlAnchorLabel = frozenLabel;
+
         return [{
           id: stableId,
-          label: smartTruncate(text, 40),
+          label: frozenLabel,
           element: p,
           fallback: {
-            sectionId: el.id,
+            sectionId: messageId,
             headingIndex: 0,
             isParagraph: true,
             containerSelector: '[data-message-author-role="assistant"]',

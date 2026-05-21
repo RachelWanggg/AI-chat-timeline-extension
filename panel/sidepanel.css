@@ -419,12 +419,12 @@ body {
 
 .context-bar-inner {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 
 .context-bar-track-wrapper {
-  flex: 1;
   position: relative;
 }
 
@@ -443,6 +443,21 @@ body {
   width: 16px;
   height: 16px;
   pointer-events: none;
+  transition: filter 0.2s ease;
+}
+
+.context-bar-avatar.warn {
+  filter: saturate(1.15);
+}
+
+.context-bar-avatar.danger {
+  filter: saturate(1.35);
+  animation: tl-avatar-pulse 1.8s ease-in-out infinite;
+}
+
+.context-bar-avatar.limit {
+  filter: saturate(1.55);
+  animation: tl-avatar-pulse 1.2s ease-in-out infinite;
 }
 
 .context-bar-fill {
@@ -456,12 +471,74 @@ body {
 .context-bar-fill.warn  { background: #ff9800; }
 .context-bar-fill.danger { background: #f44336; }
 
+.context-bar-track-wrapper.badge::after {
+  content: "!";
+  position: absolute;
+  right: -7px;
+  top: -5px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #f44336;
+  color: #fff;
+  font-size: 8px;
+  line-height: 11px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.context-bar-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.context-bar-hint {
+  font-size: 11px;
+  color: #a0a8b8;
+  min-height: 14px;
+}
+
+.context-bar-action-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .context-bar-label {
   font-size: 10px;
   color: #888;
   white-space: nowrap;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
+}
+
+.context-compact-btn {
+  border: 1px solid #e55a5a;
+  background: rgba(244, 67, 54, 0.12);
+  color: #ffb4b4;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.context-compact-btn:hover {
+  background: rgba(244, 67, 54, 0.2);
+}
+
+.context-compact-btn.success {
+  border-color: #4caf50;
+  background: rgba(76, 175, 80, 0.16);
+  color: #8ee39a;
+}
+
+@keyframes tl-avatar-pulse {
+  0% { transform: translateY(-50%) scale(1); }
+  50% { transform: translateY(-50%) scale(1.08); }
+  100% { transform: translateY(-50%) scale(1); }
 }
 
 /* Pinned 区域 */

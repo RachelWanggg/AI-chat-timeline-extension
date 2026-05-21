@@ -34,16 +34,22 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 
 // ── 监听：tab URL 变化（包括普通导航 + SPA 路由）
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  // 只在 tab 完成加载时处理（status === "complete"）
-  if (changeInfo.status !== "complete") return;
   // 只处理当前激活的 tab
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs[0] || tabs[0].id !== tabId) return;
 
-    if (isAiTab(tab.url)) {
-      triggerContentReparse(tabId);
-    } else {
+    if (changeInfo.status === "loading" && isAiTab(tab.url)) {
+      // 页面开始刷新/跳转：立即清空 panel，防止显示上一次的旧 timeline 数据。
       notifyPanelClear();
+      return;
+    }
+
+    if (changeInfo.status === "complete") {
+      if (isAiTab(tab.url)) {
+        triggerContentReparse(tabId);
+      } else {
+        notifyPanelClear();
+      }
     }
   });
 });
