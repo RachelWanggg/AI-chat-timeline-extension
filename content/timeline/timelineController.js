@@ -5,6 +5,7 @@ import { parseClaude } from "../adapters/claudeAdapter.js";
 import { createAnchorManager } from "./anchorManager.js";
 import { createScrollTracker } from "./scrollTracker.js";
 import { createScrollEngine } from "./scrollEngine.js";
+import { estimateContextStats } from "./tokenEstimator.js";
 
 /**
  * Timeline controller: orchestrate adapter + parser + anchor/scroll modules.
@@ -72,17 +73,10 @@ export function createTimelineController({ adapter, store }) {
   }
 
   function computeContextStats() {
-    let totalChars = 0;
-    if (adapter.id === "claude") {
-      document
-        .querySelectorAll('div[data-testid="user-message"], div.font-claude-response')
-        .forEach((el) => { totalChars += el.textContent.length; });
-    } else {
-      document
-        .querySelectorAll("[data-message-author-role]")
-        .forEach((el) => { totalChars += el.textContent.length; });
-    }
-    return { estimatedChars: totalChars, platform: adapter.id };
+    const messageEls = adapter.id === "claude"
+      ? document.querySelectorAll('div[data-testid="user-message"], div.font-claude-response')
+      : document.querySelectorAll("[data-message-author-role]");
+    return estimateContextStats(messageEls, adapter.id);
   }
 
   function createMessageStore() {
@@ -141,7 +135,12 @@ export function createTimelineController({ adapter, store }) {
     }
 
     function getOrder() {
-      return state.order.length > 0 ? state.order : state.domOrder;
+      if (state.order.length === 0) return state.domOrder;
+      // fetch order 拿到的是历史消息；DOM 里的新消息只进 domOrder，需要追加到末尾
+      if (state.domOrder.length === 0) return state.order;
+      const inFetchOrder = new Set(state.order);
+      const extras = state.domOrder.filter(id => !inFetchOrder.has(id));
+      return extras.length > 0 ? [...state.order, ...extras] : state.order;
     }
 
     function hasFetchOrder() {
@@ -331,6 +330,7 @@ export function createTimelineController({ adapter, store }) {
   // snapshot caches at each position, then restore scroll and build the full timeline.
   async function scrollLoadAllSections() {
     if (isScrolling) return;
+    if (suppressReparse) return;
     // fetch 拦截已经拿到全量数据时，scroll-load 仅作为兜底，无需再跑。
     if (messageStore.hasFetchOrder()) return;
     ensureConversationByPath();
@@ -351,6 +351,10 @@ export function createTimelineController({ adapter, store }) {
     const savedTop = mainEl.scrollTop;
     const step = Math.max(mainEl.clientHeight * 0.85, 400);
 
+    if (suppressReparse) {
+      isScrolling = false;
+      return;
+    }
     mainEl.scrollTop = 0;
     await new Promise((r) => setTimeout(r, 200));
 
@@ -361,6 +365,12 @@ export function createTimelineController({ adapter, store }) {
       mainEl.scrollTop = savedTop;
       isScrolling = false;
       logger.debug("scroll-load aborted: fetch data arrived mid-scroll");
+      return true;
+    };
+    const bailIfProgrammaticJump = () => {
+      if (!suppressReparse) return false;
+      isScrolling = false;
+      logger.debug("scroll-load aborted: programmatic jump in progress");
       return true;
     };
 
@@ -387,12 +397,15 @@ export function createTimelineController({ adapter, store }) {
       mainEl.scrollTop + mainEl.clientHeight < mainEl.scrollHeight - 30 &&
       safety < 300
     ) {
+      if (bailIfProgrammaticJump()) return;
       if (bailIfFetched()) return;
       captureScrollLoadSnapshot();
       mainEl.scrollTop += step;
       await new Promise((r) => setTimeout(r, 100));
+      if (bailIfProgrammaticJump()) return;
       safety++;
     }
+    if (bailIfProgrammaticJump()) return;
     if (bailIfFetched()) return;
     captureScrollLoadSnapshot();
 
@@ -431,14 +444,22 @@ export function createTimelineController({ adapter, store }) {
 
   function emitTimelineUpdate(timelineData) {
     const fp = fingerprintTimeline(timelineData);
-    if (fp && fp === lastEmittedFingerprint) return;
-    lastEmittedFingerprint = fp;
+    const contextStats = computeContextStats();
+    const contextFp = [
+      contextStats.estimatedTokens || 0,
+      contextStats.messageCount || 0,
+      contextStats.largestMessageTokens || 0,
+      contextStats.density || "",
+    ].join(":");
+    const combinedFp = `${fp}\nctx:${contextFp}`;
+    if (combinedFp && combinedFp === lastEmittedFingerprint) return;
+    lastEmittedFingerprint = combinedFp;
 
     safeSendRuntimeMessage({
       type: MESSAGE_TYPES.TIMELINE_UPDATE,
       payload: timelineData,
       url: window.location.href,
-      contextStats: computeContextStats(),
+      contextStats,
     });
   }
 

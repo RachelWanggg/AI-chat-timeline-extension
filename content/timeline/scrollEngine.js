@@ -10,9 +10,8 @@ import { createLogger } from "../utils/logger.js";
  * - 滚动容器靠"从目标向上 walk-up 找第一个真正可滚的祖先"推导，不靠 class 名猜。
  * - 用算术 scrollTop 精确定位：top = container.scrollTop + (elTop - containerTop) - offset，
  *   clamp 到 [0, scrollHeight - clientHeight]（杜绝 overscroll）。实测落点误差 0px。
- * - 两阶段：远距离 / 离屏先 instant 预定位（触发虚拟化挂载，不在白屏区跑动画），
- *   进入 ~1 屏内再 smooth 收尾（短距离平滑，不会"追逐"移动的目标）。
- * - rAF 校准：每帧重新 resolve 目标、测误差、判布局是否静止；streaming 涨高时把锚点钉住。
+ * - 两阶段：仅当目标被虚拟化卸载时先预定位触发挂载；目标已挂载时保持全程平滑滚动。
+ * - rAF 自管 smooth：每帧重新 resolve 目标并推进 scrollTop，避免原生 smooth 被 ChatGPT 重排打断。
  *
  * 依赖注入：
  * - resolveElement(anchorId): 同步返回当前活的目标元素（每次重查，永不返回脱离文档的缓存）。
@@ -27,10 +26,13 @@ export function createScrollEngine({
   const logger = createLogger("ScrollEngine");
 
   const DESIRED_OFFSET_PX = 80;        // 默认落点：容器顶部下方 80px（ChatGPT header 52 / Claude 48 + 留白）
-  const SMOOTH_DISTANCE_FACTOR = 1.0;  // 距离 ≤ 1 屏才 smooth；更远先 instant 预定位
+  const SMOOTH_DISTANCE_FACTOR = 1.0;  // 虚拟化未挂载且距离 > 1 屏时，先预定位触发挂载
   const SETTLE_TOLERANCE_PX = 4;       // 落点误差容差
   const SETTLE_STABLE_FRAMES = 4;      // 连续 N 帧达标且布局静止才算 settle
   const SETTLE_DEADLINE_MS = 1500;     // 校准上限（streaming 仍在涨时兜底退出）
+  const SMOOTH_MIN_MS = 420;           // 自管平滑滚动最短时长
+  const SMOOTH_MAX_MS = 2200;          // 自管平滑滚动最长时长，避免超长对话拖太久
+  const SMOOTH_PX_PER_MS = 3.6;        // 距离 → 时长换算，数值越大滚得越快
   const MOUNT_POLL_MS = 80;            // 等待虚拟化内容挂载的轮询间隔
   const MOUNT_TIMEOUT_MS = 1500;       // 等待挂载的最长时间
 
@@ -100,17 +102,31 @@ export function createScrollEngine({
     return Math.max(0, Math.min(raw, maxScrollTop(container)));
   }
 
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  function smoothDuration(distance) {
+    return Math.max(
+      SMOOTH_MIN_MS,
+      Math.min(SMOOTH_MAX_MS, Math.abs(distance) / SMOOTH_PX_PER_MS)
+    );
+  }
+
   /**
    * 确保目标已挂载并可解析。
    * 目标被虚拟化卸载时：取其占位 turn，用算术 instant 滚入视口触发挂载，轮询直到 resolve 成功。
    */
+  // 返回 { el, wasVirtualized }：
+  // - wasVirtualized=false：元素首次查询即已挂载，直接用 smooth scroll
+  // - wasVirtualized=true：元素需要等待挂载（虚拟化），需要 Phase 1 instant 预定位
   async function ensureResolved(anchorId, token) {
     let el = resolveElement(anchorId);
-    if (el?.isConnected) return el;
+    if (el?.isConnected) return { el, wasVirtualized: false };
 
     const deadline = performance.now() + MOUNT_TIMEOUT_MS;
     while (performance.now() < deadline) {
-      if (token !== activeToken) return null;
+      if (token !== activeToken) return { el: null, wasVirtualized: true };
       const placeholder =
         typeof locatePlaceholder === "function" ? locatePlaceholder(anchorId) : null;
       if (placeholder?.isConnected) {
@@ -119,54 +135,72 @@ export function createScrollEngine({
       }
       await delay(MOUNT_POLL_MS);
       el = resolveElement(anchorId);
-      if (el?.isConnected) return el;
+      if (el?.isConnected) return { el, wasVirtualized: true };
     }
-    return resolveElement(anchorId);
+    return { el: resolveElement(anchorId), wasVirtualized: true };
   }
 
   /**
-   * rAF 校准循环：
-   * - 每帧重新 resolve（可能已 remount）、重算目标、测误差。
-   * - 布局静止（目标 top 帧间不变）且误差达标，连续 N 帧 → settle。
-   * - 布局未静止（streaming/remount 导致目标移动）→ instant 把锚点钉到新位置。
-   * - smooth 收尾动画进行中：目标恒定、误差递减，此时只等待、绝不打断。
+   * 自管平滑滚动：
+   * 浏览器原生 smooth 在 ChatGPT 虚拟化列表中容易被重排中断，表现为"点一下只滚一段"。
+   * 这里每帧重新 resolve 目标并用缓动曲线推进 scrollTop；目标 remount / streaming 位移时，
+   * 下一帧自然追随新 target，仍然保持平滑，不做可见的 instant 跳跃。
    */
-  function settle({ token, anchorId, container, off, initialTarget }) {
+  function smoothScrollToAnchor({ token, anchorId, container, off, initialTarget }) {
     return new Promise((resolve) => {
-      const deadline = performance.now() + SETTLE_DEADLINE_MS;
+      const startTop = getScrollTop(container);
+      const startedAt = performance.now();
+      const deadline = startedAt + SMOOTH_MAX_MS + SETTLE_DEADLINE_MS;
       let stableFrames = 0;
-      let lastTarget = initialTarget; // 用 Phase 2 的目标做种，避免首帧误判为"漂移"
+      let lastTarget = initialTarget;
+      let lastLiveTarget = initialTarget;
+      let segmentStartTop = startTop;
+      let segmentTarget = initialTarget;
+      let segmentStartedAt = startedAt;
+      let segmentDuration = smoothDuration(segmentTarget - segmentStartTop);
 
       const tick = (now) => {
         if (token !== activeToken) return resolve(false); // 被新跳转作废
 
-        const el = resolveElement(anchorId);
+        const el =
+          resolveElement(anchorId) ||
+          (typeof locatePlaceholder === "function" ? locatePlaceholder(anchorId) : null);
         if (!el?.isConnected) {
           if (now < deadline) return requestAnimationFrame(tick);
-          return resolve(true);
+          return resolve(false);
         }
 
         const target = computeTargetTop(container, el, off);
-        const err = Math.abs(target - getScrollTop(container));
+        lastLiveTarget = target;
         const layoutStable = Number.isFinite(lastTarget) && Math.abs(target - lastTarget) < 1;
         lastTarget = target;
 
-        if (err <= SETTLE_TOLERANCE_PX && layoutStable) {
+        if (Math.abs(target - segmentTarget) > SETTLE_TOLERANCE_PX) {
+          segmentStartTop = getScrollTop(container);
+          segmentTarget = target;
+          segmentStartedAt = now;
+          segmentDuration = smoothDuration(segmentTarget - segmentStartTop);
+        }
+
+        const elapsed = Math.max(0, now - segmentStartedAt);
+        const progress = Math.min(1, elapsed / segmentDuration);
+        const nextTop = segmentStartTop + (segmentTarget - segmentStartTop) * easeInOutCubic(progress);
+        setScrollTop(container, nextTop, "auto");
+
+        const nextErr = Math.abs(lastLiveTarget - getScrollTop(container));
+        if (progress >= 1 && nextErr <= SETTLE_TOLERANCE_PX && layoutStable) {
           if (++stableFrames >= SETTLE_STABLE_FRAMES) {
-            logger.debug("settled:", anchorId, "err", Math.round(err));
+            logger.debug("smooth settled:", anchorId, "err", Math.round(nextErr));
             return resolve(true);
           }
         } else {
           stableFrames = 0;
-          // 目标移动了（streaming 涨高 / 节点 remount）→ instant 重新钉住；
-          // 若布局静止只是 smooth 动画还在跑，则不动它。
-          if (!layoutStable) setScrollTop(container, target, "auto");
         }
 
         if (now < deadline) requestAnimationFrame(tick);
         else {
-          logger.debug("settle deadline reached:", anchorId, "err", Math.round(err));
-          resolve(true);
+          logger.debug("smooth deadline reached:", anchorId, "err", Math.round(nextErr));
+          resolve(nextErr <= viewportHeight(container) * 0.1);
         }
       };
 
@@ -182,18 +216,20 @@ export function createScrollEngine({
     const token = ++activeToken;
     const off = offset();
 
-    let el = await ensureResolved(anchorId, token);
+    const { el: resolvedEl, wasVirtualized } = await ensureResolved(anchorId, token);
     if (token !== activeToken) return false;
-    if (!el?.isConnected) {
+    if (!resolvedEl?.isConnected) {
       logger.warn("scrollToAnchor: element unresolved", anchorId);
       return false;
     }
 
+    let el = resolvedEl;
     const container = findScrollableAncestor(el);
 
-    // Phase 1：远距离 / 离屏 → instant 预定位（触发挂载，不在白屏区跑平滑动画）。
+    // Phase 1：仅对虚拟化内容（ensureResolved 首次查询未命中）做 instant 预定位，触发 React 挂载。
+    // 已挂载内容直接进 Phase 2 smooth，避免用户感知到"瞬间跳"。
     let target = computeTargetTop(container, el, off);
-    if (Math.abs(target - getScrollTop(container)) > viewportHeight(container) * SMOOTH_DISTANCE_FACTOR) {
+    if (wasVirtualized && Math.abs(target - getScrollTop(container)) > viewportHeight(container) * SMOOTH_DISTANCE_FACTOR) {
       setScrollTop(container, target, "auto");
       await raf();
       await raf();
@@ -203,11 +239,8 @@ export function createScrollEngine({
       target = computeTargetTop(container, el, off);
     }
 
-    // Phase 2：smooth 收尾（短距离、上方已稳定 → 平滑且不追逐）。
-    setScrollTop(container, target, "smooth");
-
-    // rAF 校准 + streaming 重钉。
-    return settle({ token, anchorId, container, off, initialTarget: target });
+    // Phase 2：自管 smooth。全程平滑，同时持续追随 ChatGPT 虚拟化/重排后的真实目标。
+    return smoothScrollToAnchor({ token, anchorId, container, off, initialTarget: target });
   }
 
   // 作废当前进行中的跳转（例如对话切换 / 重新解析时）。

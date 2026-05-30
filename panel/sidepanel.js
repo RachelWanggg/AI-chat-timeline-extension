@@ -434,24 +434,24 @@ const CONTEXT_LIMITS = { claude: 200000, chatgpt: 128000 };
 const CONTEXT_STAGES = ["normal", "getting", "soon", "now", "limit"];
 const CONTEXT_STAGE_FLOORS = {
   normal: 0,
-  getting: 0.6,
-  soon: 0.8,
-  now: 0.9,
-  limit: 0.98,
+  getting: 0.5,
+  soon: 0.7,
+  now: 0.8,
+  limit: 0.9,
 };
 const CONTEXT_STAGE_DEMOTION_FLOORS = {
   normal: 0,
-  getting: 0.58,
-  soon: 0.78,
-  now: 0.88,
-  limit: 0.96,
+  getting: 0.48,
+  soon: 0.68,
+  now: 0.78,
+  limit: 0.88,
 };
 const CONTEXT_HINTS = {
-  normal: "",
+  normal: "Estimated context",
   getting: "Context is getting full",
-  soon: "Almost full, compact soon",
-  now: "Nearly full, compact now",
-  limit: "At limit, compact before continuing",
+  soon: "Compact recommended soon",
+  now: "Compact recommended",
+  limit: "Start fresh or compact before continuing",
 };
 const COMPACT_PROMPT_TEMPLATE =
   "Please compact this conversation before we continue. Keep only key decisions, constraints, unresolved questions, and next steps in concise bullet points.";
@@ -491,6 +491,33 @@ function getCompactPrompt(platform) {
   return `${COMPACT_PROMPT_TEMPLATE}\n\nFormat for ChatGPT: short, structured, and continuation-ready.`;
 }
 
+function getFiniteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function resolveEstimatedTokens(contextStats) {
+  const directTokens = getFiniteNumber(contextStats?.estimatedTokens);
+  if (directTokens !== null) return Math.max(0, Math.round(directTokens));
+
+  const estimatedChars = getFiniteNumber(contextStats?.estimatedChars);
+  if (estimatedChars !== null) return Math.max(0, Math.round(estimatedChars / 3.5));
+
+  return 0;
+}
+
+function formatKTokens(tokens) {
+  const value = Math.max(0, Number(tokens) || 0) / 1000;
+  return value < 10 && value > 0 ? value.toFixed(1) : value.toFixed(0);
+}
+
+function formatDensityLabel(density) {
+  if (density === "code-heavy") return "code-heavy";
+  if (density === "cjk-heavy") return "CJK-heavy";
+  if (density === "structured") return "structured";
+  return "";
+}
+
 async function handleCompactNowClick() {
   const compactBtn = document.getElementById("context-compact-btn");
   if (!compactBtn) return;
@@ -519,14 +546,14 @@ async function handleCompactNowClick() {
 
 function renderContextBar(contextStats) {
   const bar = document.getElementById("context-bar");
-  if (!contextStats || !contextStats.estimatedChars) {
+  const estimatedTokens = resolveEstimatedTokens(contextStats);
+  if (!contextStats || estimatedTokens <= 0) {
     bar.classList.add("hidden");
     currentContextStage = "normal";
     return;
   }
-  const { estimatedChars, platform } = contextStats;
+  const { platform } = contextStats;
   latestContextPlatform = platform || "chatgpt";
-  const estimatedTokens = Math.round(estimatedChars / 3.5);
   const limit = CONTEXT_LIMITS[platform] || 128000;
   const pct = Math.min(estimatedTokens / limit, 1);
   const stage = resolveContextStage(pct);
@@ -544,7 +571,14 @@ function renderContextBar(contextStats) {
   avatar.className = "context-bar-avatar" +
     (stage === "soon" ? " warn" : stage === "now" ? " danger" : stage === "limit" ? " limit" : "");
   trackWrapper.classList.toggle("badge", stage === "soon" || stage === "now" || stage === "limit");
-  hint.textContent = CONTEXT_HINTS[stage];
+  const largestMessageTokens = getFiniteNumber(contextStats.largestMessageTokens);
+  const densityLabel = formatDensityLabel(contextStats.density);
+  const hintParts = [CONTEXT_HINTS[stage]];
+  if (densityLabel) hintParts.push(densityLabel);
+  if (largestMessageTokens && largestMessageTokens > 1000) {
+    hintParts.push(`largest ~${formatKTokens(largestMessageTokens)}k`);
+  }
+  hint.textContent = hintParts.filter(Boolean).join(" · ");
 
   compactBtn.classList.toggle("hidden", !(stage === "now" || stage === "limit"));
   if (stage !== "now" && stage !== "limit") {
@@ -552,9 +586,10 @@ function renderContextBar(contextStats) {
     compactBtn.classList.remove("success");
   }
 
-  const kTokens = (estimatedTokens / 1000).toFixed(0);
-  const kLimit = (limit / 1000).toFixed(0);
-  label.textContent = `~${kTokens}k / ${kLimit}k tokens`;
+  const kTokens = formatKTokens(estimatedTokens);
+  const kLimit = formatKTokens(limit);
+  label.textContent = `~${kTokens}k est. / ${kLimit}k`;
+  bar.title = `${estimatedTokens.toLocaleString()} estimated tokens`;
   bar.classList.remove("hidden");
 }
 
@@ -638,13 +673,15 @@ document.addEventListener("DOMContentLoaded", () => {
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "TIMELINE_UPDATE") {
       console.log("[Panel] Received timeline data:", message.payload);
-      renderContextBar(message.contextStats);
       if (message.url && message.url !== currentPageUrl) {
         // 对话切换：先加载新对话的 pins，再渲染 timeline（保证 pin 按钮状态正确）
+        currentContextStage = "normal";
         currentPageUrl = message.url;
+        renderContextBar(message.contextStats);
         console.log("[Panel] Conversation URL:", currentPageUrl);
         loadPinnedAnchors().then(() => renderTimeline(message.payload));
       } else {
+        renderContextBar(message.contextStats);
         renderTimeline(message.payload);
       }
     }
@@ -667,7 +704,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // ✅ 新代码：加 500ms 延迟，等消息通道建立完成
+  // 初始加载：等消息通道建立后请求当前 tab 重解析
   setTimeout(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]?.id) {
@@ -678,6 +715,27 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   }, 500);
+
+  // Tab 切换：清空旧数据，向新 tab 请求重解析
+  chrome.tabs.onActivated.addListener(({ tabId }) => {
+    renderTimeline([]);
+    renderContextBar(null);
+    currentPageUrl = "unknown";
+    pinnedAnchors = new Map();
+    renderPinnedSection();
+    setTimeout(() => {
+      chrome.tabs.sendMessage(tabId, { type: "REPARSE_NOW" }).catch(() => {});
+    }, 300);
+  });
+
+  // SPA 内 URL 变化（ChatGPT/Claude 切换对话）：已有 TIMELINE_CLEAR 推送兜底，
+  // 但 tab.onUpdated 补一次 REPARSE_NOW 保证 content script 确实跑了解析。
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (!tab.active || changeInfo.status !== "complete") return;
+    setTimeout(() => {
+      chrome.tabs.sendMessage(tabId, { type: "REPARSE_NOW" }).catch(() => {});
+    }, 500);
+  });
 });
 
 /* ══════════════════════════════════════════════════

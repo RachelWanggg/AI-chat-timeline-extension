@@ -498,6 +498,10 @@ body {
   font-size: 11px;
   color: #a0a8b8;
   min-height: 14px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .context-bar-action-row {
