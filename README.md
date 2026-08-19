@@ -1,111 +1,142 @@
-# AI Chat Timeline Extension
+# AI Chat Timeline
 
-A Chrome Extension (Manifest V3) that adds a structured **timeline side panel** to ChatGPT and Claude.ai, with prompt utilities built into the chat UI.
+[![test](https://github.com/RachelWanggg/AI-chat-timeline-extension/actions/workflows/test.yml/badge.svg)](https://github.com/RachelWanggg/AI-chat-timeline-extension/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Chrome MV3](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4.svg)](manifest.json)
+
+A Chrome extension that turns a long ChatGPT or Claude.ai conversation into a navigable
+outline in the browser side panel.
+
+**What makes it different:** most chat navigators index only your questions. This one also
+parses the `h1`–`h3` headings *inside* each assistant reply, so a 40-message conversation
+becomes a two-level table of contents you can jump around — not just a list of prompts.
+
+![Timeline side panel next to a ChatGPT conversation](docs/images/sidepanel.png)
+
+### Demo
+
+[![Watch the demo](https://img.youtube.com/vi/1KqAzJv59jE/maxresdefault.jpg)](https://youtu.be/1KqAzJv59jE)
 
 ---
 
 ## Features
 
-### Timeline Navigation
-- Parse conversation turns in real time and render them in side panel order
-- Jump to any user turn or assistant heading (`h1`–`h3`) with one click
-- Active anchor highlight while scrolling
-- **Per-turn collapse**: toggle assistant anchors with `▾ / ▸`
-- **Global collapse**: `⊟ Fold All / ⊞ Unfold All`
-- Pin important assistant anchors to a top pinned area
+**Timeline navigation**
+- Parses conversation turns in real time and renders them in order
+- One click jumps to any user turn or assistant heading
+- Highlights the anchor you are currently reading as you scroll
+- Per-turn collapse (`▾ / ▸`) and global `⊟ Fold All / ⊞ Unfold All`
+- Pin important anchors to a sticky area at the top
 
-### Prompt Utilities
-- **Save to Prompt Library** button injected into user message bubbles
-- **✨ Revise** button injected into user message bubbles (Anthropic API)
-- **✨ Draft Revise** floating button above composer (ChatGPT + Claude.ai)
+**Prompt utilities**
+- **Save to Prompt Library** button injected into your own message bubbles
+- **✨ Revise** button on a message, rewriting the prompt through the Anthropic API
+- **✨ Draft Revise** floating button above the composer, on both platforms
 
-### Prompt Library
-- CRUD (add/edit/delete/copy)
-- Category + tags + keyword search
-- Open from side panel header (`Prompt Library 📚`)
+**Prompt Library**
+- Create, edit, copy, and delete prompts, with categories, tags, and keyword search
 
-### Theme
-- Light / Dark / System mode
+**Other**
+- Context usage bar estimating how much of the model's context window the conversation fills
+- Light / dark / system theme
 
 ---
 
-## Installation
+## Install
 
-1. Clone or download this repo.
-2. Open `chrome://extensions/` in Chrome.
-3. Enable **Developer mode**.
-4. Click **Load unpacked** and select this project folder.
-5. Open `chatgpt.com` or `claude.ai`, then click the extension icon to open side panel.
+No build step — the repository *is* the extension.
 
----
+1. Clone this repository.
+2. Open `chrome://extensions/` and enable **Developer mode**.
+3. Click **Load unpacked** and select the project folder.
+4. Open `chatgpt.com` or `claude.ai`, then click the extension icon to open the side panel.
 
-## Revise (Current Behavior)
-
-- Revise is **API Key Mode only** (`reviseMode: "pro"`).
-- API request is proxied through `background.js` to `https://api.anthropic.com/v1/messages`.
-- Configure key/model in side panel: **Settings → Revise Settings**.
-
-### Known limitation on Claude.ai
-
-`Use in Composer` in revision modal does not work on Claude.ai ProseMirror editor. Use **Copy** and paste manually.
+To use **Revise**, add an Anthropic API key under **Settings → Revise Settings** in the side
+panel. Requests are proxied through the service worker (`background.js`) to avoid the content
+page's CSP; the key is stored in `chrome.storage.local` and never leaves the browser except
+to `api.anthropic.com`.
 
 ---
 
-## Tech Stack
+## Architecture
+
+The interesting problem here is not parsing the DOM — it is scrolling reliably on top of a
+virtualized React list that unmounts the element you are trying to scroll to.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the data flow, the message protocol, and
+why `scrollEngine` positions arithmetically instead of calling `scrollIntoView()`.
 
 | Layer | Choice |
-|-------|--------|
-| Extension API | Chrome MV3 |
-| UI | Vanilla JS (no framework, no build step) |
+|---|---|
+| Extension API | Chrome Manifest V3 |
+| UI | Vanilla JS — no framework, no bundler, no build step |
 | Persistence | `chrome.storage.local` |
-| AI | Anthropic API |
+| AI | Anthropic API, proxied through the service worker |
+| Tests | Node's built-in `node:test` + jsdom |
 
----
-
-## File Structure
+<details>
+<summary><strong>File structure</strong></summary>
 
 ```
-├── manifest.json               # Extension config + permissions
-├── background.js               # Service worker: side panel open, tab events, API proxy
-├── content.js                  # Entry point: bootstraps the content/ module tree
+├── manifest.json                    # Extension config and permissions
+├── background.js                    # Service worker: side panel, tab events, API proxy
+├── content.js                       # Entry point: bootstraps the content/ module tree
 ├── content/
-│   ├── index.js                # Wires modules, registers chrome message listeners
+│   ├── index.js                     # Wires modules together, registers message listeners
+│   ├── chatgptFetchInterceptor.js   # MAIN-world fetch hook for the full conversation payload
 │   ├── adapters/
-│   │   ├── adapterFactory.js   # Detects host site, returns correct adapter
-│   │   ├── chatgptAdapter.js   # ChatGPT DOM parsing + MutationObserver
-│   │   └── claudeAdapter.js    # Claude.ai DOM parsing + MutationObserver
-│   ├── revise/
-│   │   ├── promptBuilder.js    # Builds revise prompt string
-│   │   ├── reviseController.js # Orchestrates revise flow end-to-end
-│   │   └── reviseService.js    # Sends REVISE_VIA_API to background
-│   ├── state/
-│   │   └── store.js            # Shared mutable state (anchorCounter, currentUrl, etc.)
+│   │   ├── adapterFactory.js        # Hostname -> platform adapter
+│   │   ├── chatgptAdapter.js        # ChatGPT DOM parsing
+│   │   └── claudeAdapter.js         # Claude.ai DOM parsing
 │   ├── timeline/
-│   │   ├── anchorManager.js    # Injects/removes tl-anchor-* DOM nodes
-│   │   ├── parser.js           # Converts raw DOM turns to TimelineTurn[]
-│   │   ├── scrollTracker.js    # IntersectionObserver → ANCHOR_VISIBLE messages
-│   │   └── timelineController.js # Orchestrates parse → send → observe cycle
-│   ├── ui/
-│   │   ├── actionButtons.js    # Save + Revise buttons in message bubbles
-│   │   ├── draftReviseButton.js # Floating Draft Revise button above composer
-│   │   ├── revisionModal.js    # Revision result modal (Copy / Use in Composer)
-│   │   └── setupModal.js       # API key setup modal
-│   └── utils/
-│       ├── constants.js        # Shared string constants (selectors, message types)
-│       ├── dom.js              # DOM helpers (waitForElement, etc.)
-│       ├── logger.js           # [Timeline] prefixed console wrapper
-│       └── text.js             # Text extraction + truncation helpers
-└── panel/
-    ├── sidepanel.html          # Side panel markup
-    ├── sidepanel.css           # Side panel styles
-    └── sidepanel.js            # Timeline rendering, collapse/pin, settings, prompt library
+│   │   ├── parser.js                # Parsed turns -> TimelineTurn[]
+│   │   ├── anchorManager.js         # anchorId -> the live DOM node
+│   │   ├── scrollEngine.js          # The single scrolling authority
+│   │   ├── scrollTracker.js         # IntersectionObserver -> active anchor
+│   │   ├── tokenEstimator.js        # Heuristic context-usage estimate
+│   │   └── timelineController.js    # Orchestrates parse -> send -> observe
+│   ├── revise/
+│   │   ├── promptBuilder.js         # Builds the revision prompt
+│   │   ├── reviseController.js      # Orchestrates the revise flow
+│   │   └── reviseService.js         # Sends REVISE_VIA_API to the service worker
+│   ├── state/store.js               # Shared mutable state
+│   ├── ui/                          # Injected buttons and modals
+│   └── utils/                       # Logger and shared constants
+├── panel/                           # Side panel: markup, styles, rendering
+└── tests/                           # node:test suite
 ```
 
+</details>
+
 ---
+
+## Tests
+
+```bash
+npm install
+npm test
+```
+
+48 tests covering the pure modules: timeline parsing, the context-window token estimator, the
+revise prompt builder, adapter resolution, and Claude DOM parsing under jsdom. They run on
+every push and pull request via GitHub Actions.
+
+---
+
+## Known limitations
+
+- **Draft Revise → "Use in Composer" does not work on Claude.ai.** Claude's composer is a
+  ProseMirror editor, which ignores the `execCommand`-based insertion the extension uses. Use
+  the **Copy** button and paste manually. ChatGPT is unaffected.
+- The context usage bar is a heuristic estimate, not a tokenizer. It is deliberately
+  conservative — it over-counts rather than under-counts.
 
 ## Roadmap
 
 - [ ] Bookmark (cross-platform conversation saving)
-- [ ] Enter key handling (newline vs submit toggle)
+- [ ] Enter key handling (newline vs. submit toggle)
 - [ ] Copy LaTeX
-- [ ] Draft Revise `Use in Composer` support on Claude.ai
+- [ ] `Use in Composer` support on Claude.ai via synthetic ProseMirror events
+
+## License
+
+[MIT](LICENSE)
