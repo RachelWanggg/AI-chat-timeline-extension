@@ -1,34 +1,3 @@
-// ── Mock data（假数据），用于测试 UI 渲染
-// 在真实版本里，这些数据将来自 content script 解析出的结构
-
-const MOCK_TIMELINE = [
-  {
-    id: "turn-1",
-    userText: "解释一下什么是 binary search",
-    assistantAnchors: [
-      { id: "a-1-1", label: "概念解释" },
-      { id: "a-1-2", label: "时间复杂度分析" },
-      { id: "a-1-3", label: "代码示例 (Python)" },
-    ],
-  },
-  {
-    id: "turn-2",
-    userText: "帮我生成一份 README.md",
-    assistantAnchors: [
-      { id: "a-2-1", label: "README 文档内容" },
-      { id: "a-2-2", label: "下载链接" },
-    ],
-  },
-  {
-    id: "turn-3",
-    userText: "这段代码有什么 bug？",
-    assistantAnchors: [
-      { id: "a-3-1", label: "Bug 分析" },
-      { id: "a-3-2", label: "修复方案" },
-    ],
-  },
-];
-
 // ── lastTimelineData：保存最新一次收到的 timeline 数据
 // togglePin 需要用它来重新渲染 timeline
 let lastTimelineData = [];
