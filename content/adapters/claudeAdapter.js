@@ -57,11 +57,12 @@ export function parseClaude() {
     const isUser = el.matches('div[data-testid="user-message"]');
 
     if (isUser) {
-      // 普通文本消息有 .whitespace-pre-wrap；纯代码块消息没有，回退到整条 user-message 文本
+      // Plain text messages have .whitespace-pre-wrap; code-block-only messages do not,
+      // so fall back to the full user-message text.
       const node = el.querySelector(".whitespace-pre-wrap");
       const text = (node || el).textContent.trim();
       if (!text) return;
-      // 用 DOM 顺序位置生成稳定 ID，避免 SPA 导航后 counter 漂移
+      // Derive a stable id from DOM position so the counter does not drift after SPA navigation.
       const stableId = `tl-user-${userIdx++}`;
       el.id = stableId;
       result.push({ id: stableId, role: "user", text, element: el });

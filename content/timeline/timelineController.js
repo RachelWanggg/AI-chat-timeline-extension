@@ -14,11 +14,13 @@ import { estimateContextStats } from "./tokenEstimator.js";
 export function createTimelineController({ adapter, store }) {
   const logger = createLogger("Timeline");
 
-  // anchorManager：纯解析器，anchorId → 当前活节点。
+  // anchorManager: a pure resolver, anchorId -> the live node.
   const anchorManager = createAnchorManager();
 
-  // scrollEngine：唯一的滚动权威 —— 通用容器检测 + 算术定位 + 两阶段 + rAF 校准 + streaming 重钉。
-  // resolveElement 每次重查活节点；locatePlaceholder 在目标被虚拟化时返回占位 turn 供滚入挂载。
+  // scrollEngine: the single scrolling authority -- generic container detection, arithmetic
+  // positioning, two-phase mounting, rAF calibration, and re-pinning while a reply streams.
+  // resolveElement re-queries the live node every time; locatePlaceholder returns the
+  // placeholder turn when the target has been virtualized, so it can be scrolled in to mount.
   const scrollEngine = createScrollEngine({
     resolveElement: (anchorId) => anchorManager.getElement(anchorId),
     locatePlaceholder: (anchorId) =>
@@ -136,7 +138,8 @@ export function createTimelineController({ adapter, store }) {
 
     function getOrder() {
       if (state.order.length === 0) return state.domOrder;
-      // fetch order 拿到的是历史消息；DOM 里的新消息只进 domOrder，需要追加到末尾
+      // The fetch order only covers history. Messages that appeared since then exist only in
+      // domOrder, so append them at the end.
       if (state.domOrder.length === 0) return state.order;
       const inFetchOrder = new Set(state.order);
       const extras = state.domOrder.filter(id => !inFetchOrder.has(id));
@@ -171,15 +174,17 @@ export function createTimelineController({ adapter, store }) {
   let scrollLoadComplete = false;
   let lastScrolledPath = null;
   let isScrolling = false;
-  // 跳转闸：side panel 点击触发的程序化跳转期间，挂载/卸载会狂刷 MutationObserver，
-  // 若此时跑 reparse（重建 IntersectionObserver、重抽所有标题）会把工作砸在
-  // 页面正吃力挂载重型 turn 的同一刻，加重卡顿。跳转中暂停 reparse，落定后只解析一次。
+  // Reparse gate. During a programmatic jump from a side-panel click, mounting and unmounting
+  // floods the MutationObserver. Running a reparse then -- rebuilding the IntersectionObserver
+  // and re-extracting every heading -- piles work onto the exact frames where the page is
+  // already struggling to mount heavy turns, making the stutter worse. So suspend reparse
+  // while jumping and parse exactly once after it settles.
   let suppressReparse = false;
   let lastSeenPathname = window.location.pathname;
   const scrollLoadOrderMap = new Map();
 
   function resetConversationState(nextKey, currentNodeId = null) {
-    scrollEngine.cancel(); // 作废上一对话里仍在进行的跳转
+    scrollEngine.cancel(); // Invalidate any jump still running in the previous conversation
     messageStore.reset(nextKey || null, currentNodeId || null);
     scrollLoadComplete = false;
     lastScrolledPath = null;
@@ -314,9 +319,11 @@ export function createTimelineController({ adapter, store }) {
     return parsed;
   }
 
-  // 真实滚动容器：从一条代表性消息向上 walk-up 找第一个真正可滚的祖先。
-  // ChatGPT/Claude 通用（实测分别命中 [scrollbar-gutter] 与 [scrollbar-gutter:stable] 的 div，
-  // 都不是 window），不再靠 class 名猜，也自动避开 sidebar 等无关嵌套滚动容器。
+  // The real scroll container: walk up from a representative message to the first genuinely
+  // scrollable ancestor. This works on both platforms -- measured, ChatGPT resolves to a
+  // [scrollbar-gutter] div and Claude to a [scrollbar-gutter:stable] div, neither of which is
+  // window. It avoids guessing from class names and skips unrelated nested scroll containers
+  // such as the sidebar.
   function getConversationScrollContainer() {
     const probe =
       document.querySelector('[data-message-author-role]') ||
@@ -331,7 +338,7 @@ export function createTimelineController({ adapter, store }) {
   async function scrollLoadAllSections() {
     if (isScrolling) return;
     if (suppressReparse) return;
-    // fetch 拦截已经拿到全量数据时，scroll-load 仅作为兜底，无需再跑。
+    // Once the fetch interceptor has the full conversation, scroll-load is only a fallback.
     if (messageStore.hasFetchOrder()) return;
     ensureConversationByPath();
     const currentPath = window.location.pathname;
@@ -358,8 +365,9 @@ export function createTimelineController({ adapter, store }) {
     mainEl.scrollTop = 0;
     await new Promise((r) => setTimeout(r, 200));
 
-    // fetch 拦截在 scroll-load 进行中到达：立即让位并放弃本次扫描。
-    // 否则 scroll-load 会继续写 DOM 缓存，覆盖 fetch 刚填好的顺序与锚点。
+    // The fetch interceptor landed mid scroll-load: yield immediately and abandon this scan,
+    // otherwise scroll-load keeps writing the DOM cache and overwrites the order and anchors
+    // the fetch just populated.
     const bailIfFetched = () => {
       if (!messageStore.hasFetchOrder()) return false;
       mainEl.scrollTop = savedTop;
@@ -490,22 +498,24 @@ export function createTimelineController({ adapter, store }) {
     return turns;
   }
 
-  // 按稳定的 message id 定位它所属的 turn <section>。
-  // ChatGPT 会卸载离屏 turn 的内容（高度归零）但保留 section 占位节点，
-  // 所以即使消息被虚拟化，这里仍能返回占位 section 供 anchorManager 滚入触发挂载。
+  // Locate the turn <section> a message belongs to, keyed by its stable message id.
+  // ChatGPT unmounts the contents of offscreen turns (their height drops to zero) but keeps
+  // the section placeholder, so even a virtualized message still resolves to a placeholder
+  // section that anchorManager can scroll into view to trigger the mount.
   function locateSectionByMessageId(messageId) {
     if (!messageId) return null;
     if (adapter.id !== "chatgpt") {
-      // 其它平台：直接按已挂载的 message 节点找最近的 turn 容器。
+      // Other platforms: find the nearest turn container from the mounted message node.
       const mounted = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
       return mounted?.closest?.(adapter.turnSelector || "*") || mounted || null;
     }
 
-    // 1) 已挂载：用真实 message 节点回溯到 section（最准）。
+    // 1) Mounted: walk up from the real message node to its section (most accurate).
     const mounted = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
     if (mounted) return mounted.closest(adapter.turnSelector) || mounted;
 
-    // 2) 被虚拟化：用会话顺序里的下标映射到 conversation-turn-{n}（testid 连续且 1-based）。
+    // 2) Virtualized: map the conversation-order index onto conversation-turn-{n}
+    //    (the testid is contiguous and 1-based).
     const order = messageStore.getOrder();
     const idx = order.indexOf(messageId);
     if (idx < 0) {
@@ -518,7 +528,7 @@ export function createTimelineController({ adapter, store }) {
       : document;
     const turns = collectChatgptTurnElements(scope);
 
-    // 优先按 testid 数字精确匹配（顺序下标 + 1）；否则退化到按 DOM 顺序取第 idx 个。
+    // Prefer an exact testid match (index + 1); otherwise fall back to the idx-th in DOM order.
     const byTestid = turns.find((t) => getChatgptTurnIndex(t) === idx + 1);
     if (byTestid) return byTestid;
 
@@ -566,7 +576,8 @@ export function createTimelineController({ adapter, store }) {
     }];
   }
 
-  // 接收 fetch 拦截送来的全量消息，重建以 message id 为 key 的缓存并重新解析。
+  // Receive the full message list from the fetch interceptor, rebuild the message-id-keyed
+  // cache, and re-parse.
   function ingestFetchedPayload(detail) {
     if (extensionInvalidated) return;
     const messages = detail?.messages;
@@ -621,7 +632,7 @@ export function createTimelineController({ adapter, store }) {
     }
   }
 
-  // turn 元素内 [data-message-id] 节点的 id —— 与 API 的 node id 同一套。
+  // The id on a [data-message-id] node inside a turn -- the same identifier space as the API's node id.
   function getTurnMessageId(turn) {
     const node = turn?.querySelector?.(
       '[data-message-id][data-message-author-role="user"], ' +
@@ -631,7 +642,7 @@ export function createTimelineController({ adapter, store }) {
     return node?.getAttribute?.("data-message-id") || null;
   }
 
-  // 从助手回复的 markdown 文本里抽取 h1~h3 标题（跳过 ``` 代码块）。
+  // Extract h1-h3 headings from an assistant reply's markdown text, skipping ``` code blocks.
   function extractHeadingsFromMarkdown(text) {
     const headings = [];
     let inFence = false;
@@ -644,7 +655,8 @@ export function createTimelineController({ adapter, store }) {
     return headings;
   }
 
-  // 无标题时，取第一段有意义的文字作为单个 anchor 的 label（与 DOM adapter 行为一致）。
+  // With no headings, use the first meaningful paragraph as the label of a single anchor,
+  // matching the DOM adapter's behaviour.
   function firstParagraphLabel(text) {
     let inFence = false;
     const lines = String(text || "").split("\n");
@@ -686,7 +698,8 @@ export function createTimelineController({ adapter, store }) {
 
     emitTimelineUpdate(timelineData);
 
-    // IntersectionObserver 以真实滚动容器为 root（而非 layout viewport），高亮判定才准确。
+    // The IntersectionObserver root must be the real scroll container, not the layout
+    // viewport, for the active-anchor decision to be accurate.
     const trackedEls = Array.from(document.querySelectorAll("[data-tl-anchor-id]"));
     const container = trackedEls.length ? scrollEngine.findScrollableAncestor(trackedEls[0]) : null;
     const root =
@@ -728,7 +741,8 @@ export function createTimelineController({ adapter, store }) {
 
     observer = new MutationObserver((mutations) => {
       if (extensionInvalidated) return;
-      // 程序化跳转进行中：忽略跳转自身引发的挂载/卸载 mutation，避免边滚边重解析。
+      // A programmatic jump is in flight: ignore the mount/unmount mutations it causes so we
+      // do not re-parse while scrolling.
       if (suppressReparse) return;
       const relevantChange = isChatgpt
         ? true
@@ -762,11 +776,12 @@ export function createTimelineController({ adapter, store }) {
     if (!message || typeof message !== "object") return;
 
     if (message.type === MESSAGE_TYPES.SCROLL_TO_ANCHOR) {
-      // scrollEngine 自身已处理：虚拟化挂载 + 重渲染重查 + settle 纠偏，无需外部重试。
-      // 跳转期间：
-      // - suppressReparse 升闸，避免挂载 mutation 触发的 reparse 与页面挂载抢同一帧；
-      // - scrollTracker.lock()，避免途经的 anchor 被 IntersectionObserver 误判为 active 而闪烁。
-      // 落定后清闸、只解析一次、用目标 id 解锁高亮。
+      // scrollEngine already handles virtualized mounting, re-querying after a re-render, and
+      // settle correction, so no external retry is needed. While the jump runs:
+      // - suppressReparse is raised, so a reparse triggered by mount mutations does not compete
+      //   with the page's own mounting for the same frames;
+      // - scrollTracker.lock() prevents anchors scrolled past from being reported as active.
+      // Once settled: lower the gate, parse exactly once, and unlock with the target id.
       suppressReparse = true;
       scrollTracker.lock();
       scrollEngine
@@ -804,14 +819,16 @@ export function createTimelineController({ adapter, store }) {
     reparseNow();
 
     if (adapter.id === "chatgpt") {
-      // 监听 MAIN world 拦截器送来的全量对话。
+      // Listen for the full conversation from the MAIN-world interceptor.
       window.addEventListener("chatgpt-conversation-fetched", onConversationFetched);
-      // 拦截器在 document_start 就跑了，可能早于此监听器；主动请求一次补发首屏数据。
+      // The interceptor runs at document_start, likely before this listener exists, so ask it
+      // to replay the first screen.
       try {
         window.dispatchEvent(new CustomEvent("chatgpt-conversation-request"));
       } catch (err) {}
 
-      // scroll-load 作为兜底，页面就绪前会自行 bail；已有 fetch 顺序时直接跳过。
+      // scroll-load is the fallback: it bails on its own before the page is ready, and is
+      // skipped entirely once a fetch order exists.
       scrollLoadAllSections();
       setTimeout(scrollLoadAllSections, 900);
       setTimeout(scrollLoadAllSections, 2200);
@@ -819,8 +836,8 @@ export function createTimelineController({ adapter, store }) {
     }
 
     if (adapter.id === "claude") {
-      // Claude React 渲染可能晚于 document_idle，初始 parse 可能扑空。
-      // 延迟重解析兜底，确保对话内容出现后能及时更新 timeline。
+      // Claude's React render can finish after document_idle, so the initial parse may find
+      // nothing. A delayed re-parse ensures the timeline updates once the conversation appears.
       setTimeout(reparseNow, 1000);
       setTimeout(reparseNow, 2500);
     }

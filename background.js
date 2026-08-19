@@ -1,7 +1,7 @@
 const AI_HOSTNAMES = ["chatgpt.com", "chat.openai.com", "claude.ai"];
 
 function isAiTab(url) {
-  // 检查 URL 是否属于我们支持的 AI 网站
+  // Check whether the URL belongs to one of the AI sites we support
   try {
     const hostname = new URL(url).hostname;
     return AI_HOSTNAMES.some((h) => hostname.includes(h));
@@ -10,17 +10,17 @@ function isAiTab(url) {
   }
 }
 
-// 通知 side panel 清空（当前 tab 不是 AI 页面）
+// Tell the side panel to clear (the active tab is not an AI page)
 function notifyPanelClear() {
   chrome.runtime.sendMessage({ type: "TIMELINE_CLEAR" }).catch(() => {});
 }
 
-// 通知 content.js 重新解析并推送 timeline 给 side panel
+// Ask content.js to re-parse and push a fresh timeline to the side panel
 function triggerContentReparse(tabId) {
   chrome.tabs.sendMessage(tabId, { type: "REPARSE_NOW" }).catch(() => {});
 }
 
-// ── 监听：用户切换 tab（tab activation）
+// Listen for tab activation
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId, (tab) => {
     if (!tab.url) return;
@@ -32,14 +32,15 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   });
 });
 
-// ── 监听：tab URL 变化（包括普通导航 + SPA 路由）
+// Listen for tab URL changes (regular navigation as well as SPA routing)
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  // 只处理当前激活的 tab
+  // Only handle the currently active tab
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs[0] || tabs[0].id !== tabId) return;
 
     if (changeInfo.status === "loading" && isAiTab(tab.url)) {
-      // 页面开始刷新/跳转：立即清空 panel，防止显示上一次的旧 timeline 数据。
+      // The page is reloading or navigating: clear the panel right away so it never shows
+      // the previous conversation's stale timeline.
       notifyPanelClear();
       return;
     }
@@ -54,13 +55,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   });
 });
 
-// ── 原有功能保留：点击 icon 打开 side panel
+// Clicking the toolbar icon opens the side panel
 chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
 });
 
-// ── Pro Mode: 直接调用 Anthropic API（不受内容页 CSP 限制）
-// 401 → err.code = "INVALID_KEY"（调用方可据此弹出 key 错误提示）
+// Pro Mode: call the Anthropic API from the service worker, which is not subject to the
+// content page's CSP.
+// A 401 maps to err.code = "INVALID_KEY" so the caller can surface an API-key error.
 async function callAnthropicAPI(prompt, apiKey, model) {
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -104,9 +106,10 @@ async function callAnthropicAPI(prompt, apiKey, model) {
   return text;
 }
 
-// ── 监听来自 content.js 的消息
+// Handle messages from content.js
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  // ── ADD_PROMPT_FROM_CONTENT: 直接写 storage，不依赖 side panel 是否开启
+  // ADD_PROMPT_FROM_CONTENT: write straight to storage so it works whether or not the
+  // side panel is open.
   if (message.type === 'ADD_PROMPT_FROM_CONTENT') {
     const { title, text } = message;
     chrome.storage.local.get('promptLibrary', (result) => {
@@ -121,20 +124,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       });
       chrome.storage.local.set({ promptLibrary: library }, () => {
         sendResponse({ ok: true });
-        // 通知 side panel 刷新列表（panel 未开时静默失败）
+        // Ask the side panel to refresh its list (fails silently when the panel is closed)
         chrome.runtime.sendMessage({ type: 'PROMPT_LIBRARY_UPDATED' }).catch(() => {});
       });
     });
-    return true; // 保持通道（async sendResponse）
+    return true; // Keep the channel open for the async sendResponse
   }
 
-  // ── REVISE_VIA_API: 调用 Anthropic API
+  // REVISE_VIA_API: call the Anthropic API
   if (message.type === 'REVISE_VIA_API') {
     const { prompt, apiKey, model } = message;
     callAnthropicAPI(prompt, apiKey, model)
       .then((text) => sendResponse({ ok: true, text }))
       .catch((err) => sendResponse({ ok: false, error: err.message, code: err.code ?? null }));
-    return true; // 保持消息通道开放（async response）
+    return true; // Keep the message channel open for the async response
   }
 
   return false;

@@ -1,37 +1,35 @@
-// ── lastTimelineData：保存最新一次收到的 timeline 数据
-// togglePin 需要用它来重新渲染 timeline
+// Most recent timeline data received. togglePin re-renders from it.
 let lastTimelineData = [];
 
-// 当前已 pin 的 anchor 集合（Set 保证唯一性）
+// Currently pinned anchors
 // key: anchorId, value: { id, label, userText }
 let pinnedAnchors = new Map();
 
-// 当前折叠的 turn 集合（默认全部展开）
+// Currently collapsed turns (everything is expanded by default)
 const collapsedTurns = new Set();
 
-// ── 当前页面 URL（由 content script 推送）
-// 用来生成 per-conversation storage key
+// Current page URL, pushed by the content script. Used to build a per-conversation storage key.
 let currentPageUrl = "unknown";
 
-// 从 chrome.storage.local 读取上次保存的 pins
+// Load previously saved pins from chrome.storage.local
 async function loadPinnedAnchors() {
   const key = getStorageKey();
   const result = await chrome.storage.local.get(key);
   if (result[key]) {
     pinnedAnchors = new Map(Object.entries(result[key]));
   } else {
-    pinnedAnchors = new Map(); // 新对话，清空
+    pinnedAnchors = new Map(); // New conversation, start empty
   }
   renderPinnedSection();
 }
-// 每次 pin/unpin 后都调用，持久化到 storage
+// Called after every pin/unpin to persist to storage
 async function savePinnedAnchors() {
-  // Map 不能直接 JSON 序列化，转成 Object
+  // A Map is not JSON-serializable, so convert to a plain object
   const key = getStorageKey();
   const obj = Object.fromEntries(pinnedAnchors);
   await chrome.storage.local.set({ [key]: obj });
 }
-// 切换 pin 状态
+// Toggle the pinned state of an anchor
 async function togglePin(anchorId, label, userText) {
   if (pinnedAnchors.has(anchorId)) {
     pinnedAnchors.delete(anchorId);
@@ -40,7 +38,7 @@ async function togglePin(anchorId, label, userText) {
   }
   await savePinnedAnchors();
   renderPinnedSection();
-  renderTimeline(lastTimelineData); // 重新渲染 timeline，更新按钮状态
+  renderTimeline(lastTimelineData); // Re-render so the pin buttons reflect the new state
 }
 function renderPinnedSection() {
   const section = document.getElementById("pinned-section");
@@ -65,7 +63,8 @@ function renderPinnedSection() {
       </div>
     `;
 
-    // 点击跳转：乐观高亮 + 跳转，并在 settle 期间忽略观测回报，避免途中闪烁
+    // Click to jump: highlight optimistically, scroll, and ignore observer reports while the
+    // scroll settles so the highlight does not flicker en route.
     item.querySelector(".pinned-label").addEventListener("click", () => {
       isManualClick = true;
       setActiveAnchor(id);
@@ -73,7 +72,7 @@ function renderPinnedSection() {
       setTimeout(() => { isManualClick = false; }, 1600);
     });
 
-    // 点击取消 pin
+    // Click to unpin
     item.querySelector(".unpin-btn").addEventListener("click", (e) => {
       e.stopPropagation();
       togglePin(id, label, userText);
@@ -180,7 +179,7 @@ function toggleAllTurnsCollapse() {
   updateFoldAllButtonState(turnIds);
 }
 
-// ── 防止点击后被滚动事件覆盖高亮
+// Prevent a scroll event from overriding the highlight right after a click
 let isManualClick = false;
 let lastActiveAnchorId = null;
 
@@ -191,10 +190,10 @@ function isElementInView(el, container) {
   return r.top >= cr.top && r.bottom <= cr.bottom;
 }
 
-// ── 设置当前高亮 anchor（点击 + 滚动共用）
+// Set the active anchor, shared by click and scroll paths
 function setActiveAnchor(anchorId) {
   if (!anchorId) return;
-  if (anchorId === lastActiveAnchorId) return; // 避免重复高亮导致闪烁
+  if (anchorId === lastActiveAnchorId) return; // Skip redundant highlights that cause flicker
   lastActiveAnchorId = anchorId;
 
   document.querySelectorAll(".active").forEach((el) => el.classList.remove("active"));
@@ -204,7 +203,7 @@ function setActiveAnchor(anchorId) {
   if (el) {
     el.classList.add("active");
 
-    // 只有当高亮项不在可视区时才滚动，避免持续 scrollIntoView 引发抖动
+    // Only scroll when the active item is out of view; scrolling on every update jitters
     const root = document.getElementById("timeline-root");
     if (root && !isElementInView(el, root)) {
       el.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -212,7 +211,7 @@ function setActiveAnchor(anchorId) {
   }
 }
 
-// ── 发送跳转消息给 content.js
+// Send a jump message to content.js
 function scrollToAnchor(anchorId) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (tabs[0]) {
@@ -224,8 +223,8 @@ function scrollToAnchor(anchorId) {
   });
 }
 
-// 获取当前 tab 的 URL，生成 per-conversation storage key
-// 用 URL 作为 namespace，隔离不同对话的 pins
+// Build a per-conversation storage key from the active tab's URL, namespacing pins so
+// different conversations do not share them.
 function getStorageKey() {
   // return new Promise((resolve) => {
   //   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -236,14 +235,14 @@ function getStorageKey() {
   return `pins:${currentPageUrl}`;
 }
 
-// ── 渲染单个用户消息块（conversation turn）
+// Render a single conversation turn
 function renderTurn(turn) {
-  // 创建外层容器
+  // Outer container
   const block = document.createElement("div");
   block.className = "turn-block";
   block.dataset.turnId = turn.id;
 
-  // 渲染用户问题行（user anchor）
+  // User question row (the user anchor)
   const userRow = document.createElement("div");
   userRow.className = "user-anchor";
   const userMain = document.createElement("div");
@@ -280,7 +279,7 @@ function renderTurn(turn) {
     userRow.appendChild(foldBtn);
   }
 
-  // 点击事件暂时只打 log，后续会跳转到页面元素
+  // For now the click only logs; jumping to the page element comes later
   userRow.addEventListener("click", () => {
     console.log("[Timeline] user anchor clicked:", turn.id);
     isManualClick = true;
@@ -291,7 +290,7 @@ function renderTurn(turn) {
 
   block.appendChild(userRow);
 
-  // 渲染助手回复跳转点（assistant anchors）
+  // Assistant anchors
   if (hasAssistantAnchors) {
     assistantWrapper = document.createElement("div");
     assistantWrapper.className = "assistant-anchors";
@@ -302,7 +301,7 @@ function renderTurn(turn) {
       const row = document.createElement("div");
       row.className = "assistant-anchor";
       row.dataset.anchorId = anchor.id;
-      // ── 左侧：箭头 + 标签
+      // Left: caret + label
       const left = document.createElement("div");
       left.className = "anchor-left";
       left.innerHTML = `
@@ -316,7 +315,7 @@ function renderTurn(turn) {
         setTimeout(() => { isManualClick = false; }, 1600);
       });
 
-      // ── 右侧：pin 按钮 ✅ 正确位置
+      // Right: pin button
       const pinBtn = document.createElement("button");
       pinBtn.className = "pin-btn";
       pinBtn.textContent = pinnedAnchors.has(anchor.id) ? "📌" : "🖇️";
@@ -337,7 +336,7 @@ function renderTurn(turn) {
   return block;
 }
 
-// ── 渲染空状态（empty state）
+// Render the empty state
 function renderEmptyState() {
   const el = document.createElement("div");
   el.className = "empty-state";
@@ -372,18 +371,18 @@ function isSameTimeline(a, b) {
   return true;
 }
 
-// ── 主渲染函数（main render function）
+// Main render function
 function renderTimeline(timelineData) {
-  // 如果数据没变，不重渲染，避免闪烁
+  // Skip the re-render when nothing changed, to avoid flicker
   if (isSameTimeline(timelineData, lastTimelineData)) {
     return;
   }
 
-  lastTimelineData = timelineData; // 保存最新数据，供 togglePin 重渲染用
+  lastTimelineData = timelineData; // Keep the latest data for togglePin to re-render from
   pruneStalePinnedAnchors(timelineData);
   const turnIds = syncCollapsedTurns(timelineData);
   const root = document.getElementById("timeline-root");
-  root.innerHTML = ""; // 清空旧内容
+  root.innerHTML = ""; // Clear previous content
 
   if (!timelineData || timelineData.length === 0) {
     root.appendChild(renderEmptyState());
@@ -562,27 +561,26 @@ function renderContextBar(contextStats) {
   bar.classList.remove("hidden");
 }
 
-// ── 工具函数：防止 XSS（escape HTML）
-// 在 interview 中，这个叫做 output encoding / HTML sanitization
+// Escape HTML to prevent XSS (output encoding)
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
   return div.innerHTML;
 }
 
-// ── 入口：页面加载完毕后渲染
+// Entry point: render once the page has loaded
 document.addEventListener("DOMContentLoaded", () => {
-  renderPinnedSection(); // 初始化时 pins 为空，隐藏 pinned section
+  renderPinnedSection(); // Pins are empty at startup, so the section stays hidden
   renderTimeline([]);
 
-  // ── 加载设置与主题
+  // Load settings and theme
   loadSettings();
   loadReviseSettings();
 
-  // ── 加载 Prompt Library
+  // Load the Prompt Library
   loadPromptLibrary();
 
-  // ── Prompt 相关事件监听
+  // Prompt Library event listeners
   document.getElementById("fold-all-btn").addEventListener("click", toggleAllTurnsCollapse);
   document.getElementById("prompt-library-btn").addEventListener("click", openPromptDrawer);
   document.getElementById("close-prompt-drawer").addEventListener("click", closePromptDrawer);
@@ -590,7 +588,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("prompt-search-input").addEventListener("input", handleSearchPrompts);
   document.getElementById("context-compact-btn").addEventListener("click", handleCompactNowClick);
 
-  // ── 设置相关
+  // Settings
   document.getElementById("settings-btn").addEventListener("click", () => {
     document.getElementById("settings-overlay").classList.toggle("hidden");
   });
@@ -602,12 +600,12 @@ document.addEventListener("DOMContentLoaded", () => {
     applyTheme(e.target.value);
   });
 
-  // ── Revise Mode 切换
+  // Revise mode switch
   document.getElementById('revise-mode-select').addEventListener('change', async (e) => {
     const proFields = document.getElementById('pro-mode-fields');
     const status    = document.getElementById('revise-config-status');
     status.textContent = '';
-    // API Key Mode：只显示字段，等用户点 Save 才写入 storage
+    // API Key Mode: only reveal the fields; nothing is written to storage until Save
     proFields.classList.remove('hidden');
   });
 
@@ -628,22 +626,23 @@ document.addEventListener("DOMContentLoaded", () => {
     status.textContent = 'Saved ✓';
     setTimeout(() => { status.textContent = ''; }, 2500);
   });
-  // ── Modal 拖拽与缩放初始化
+  // Modal drag and resize setup
   initModalActions();
 
-  // Prompt 抽屉背景点击关闭
+  // Clicking the backdrop closes the prompt drawer
   document.getElementById("prompt-drawer").addEventListener("click", (e) => {
     if (e.target.id === "prompt-drawer") {
       closePromptDrawer();
     }
   });
 
-  // 监听来自 content.js 的消息（message listener）
+  // Messages from content.js
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "TIMELINE_UPDATE") {
       console.log("[Panel] Received timeline data:", message.payload);
       if (message.url && message.url !== currentPageUrl) {
-        // 对话切换：先加载新对话的 pins，再渲染 timeline（保证 pin 按钮状态正确）
+        // Conversation switch: load the new conversation's pins before rendering the
+        // timeline, so the pin buttons show the right state.
         currentContextStage = "normal";
         currentPageUrl = message.url;
         renderContextBar(message.contextStats);
@@ -667,13 +666,13 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
 
-    // background.js 已保存，panel 只需重新从 storage 加载
+    // background.js already saved it; the panel just reloads from storage
     if (message.type === "PROMPT_LIBRARY_UPDATED") {
       loadPromptLibrary();
     }
   });
 
-  // 初始加载：等消息通道建立后请求当前 tab 重解析
+  // Initial load: once the message channel exists, ask the active tab to re-parse
   setTimeout(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]?.id) {
@@ -685,7 +684,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }, 500);
 
-  // Tab 切换：清空旧数据，向新 tab 请求重解析
+  // Tab switch: clear stale data and ask the new tab to re-parse
   chrome.tabs.onActivated.addListener(({ tabId }) => {
     renderTimeline([]);
     renderContextBar(null);
@@ -697,8 +696,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 300);
   });
 
-  // SPA 内 URL 变化（ChatGPT/Claude 切换对话）：已有 TIMELINE_CLEAR 推送兜底，
-  // 但 tab.onUpdated 补一次 REPARSE_NOW 保证 content script 确实跑了解析。
+  // SPA URL changes (switching conversations on ChatGPT/Claude) are already covered by the
+  // TIMELINE_CLEAR push, but tab.onUpdated sends one more REPARSE_NOW to guarantee the
+  // content script actually ran a parse.
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (!tab.active || changeInfo.status !== "complete") return;
     setTimeout(() => {
@@ -729,7 +729,7 @@ function setReviseConfig(partial) {
   });
 }
 
-// 从 storage 读取 Revise 设置并填入表单
+// Read revise settings from storage and populate the form
 async function loadReviseSettings() {
   const config = await getReviseConfig();
 
@@ -742,7 +742,7 @@ async function loadReviseSettings() {
   keyInput.value   = config.anthropicApiKey;
   modelSelect.value = config.anthropicModel;
 
-  // 根据当前选中的 mode 显示/隐藏 pro 字段
+  // Show or hide the pro fields based on the selected mode
   proFields.classList.toggle('hidden', modeSelect.value !== 'pro');
 }
 
@@ -757,8 +757,8 @@ async function loadSettings() {
   applyTheme(settings.theme);
 }
 
-// ── 一次性清理旧版本遗留的 BYOK API Key 存储
-// 只在首次运行新版本时执行一次，之后跳过
+// One-time cleanup of the BYOK API key storage left behind by an older version.
+// Runs once on the first launch of a new version, then is skipped.
 chrome.storage.local.get("_byokCleanupDone", (r) => {
   if (!r._byokCleanupDone) {
     chrome.storage.local.remove(["apiKeys"]);
@@ -852,16 +852,16 @@ function openPromptDrawer() {
 }
 
 /* ══════════════════════════════════════════════════
-   PROMPT LIBRARY 功能
+   PROMPT LIBRARY
    ══════════════════════════════════════════════════ */
 
-// Prompt Library 数据（内存中保存）
+// In-memory Prompt Library data
 let promptLibrary = [];
 
-// 当前激活的 category filter（"All" 表示不过滤）
+// Active category filter ("All" means no filtering)
 let activeCategory = "All";
 
-// 从 chrome.storage.local 加载已保存的 prompts
+// Load saved prompts from chrome.storage.local
 async function loadPromptLibrary() {
   try {
     const result = await chrome.storage.local.get("promptLibrary");
@@ -872,7 +872,7 @@ async function loadPromptLibrary() {
   }
 }
 
-// 持久化 Prompt Library 到 chrome.storage.local
+// Persist the Prompt Library to chrome.storage.local
 async function savePromptLibrary() {
   try {
     await chrome.storage.local.set({ promptLibrary });
@@ -881,12 +881,12 @@ async function savePromptLibrary() {
   }
 }
 
-// 生成 UUID
+// Generate a UUID
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
-// 添加新 prompt
+// Add a new prompt
 async function addPrompt(title, text, category, tagsString) {
   if (!title.trim() || !text.trim()) {
     alert("Title and text cannot be empty");
@@ -914,7 +914,7 @@ async function addPrompt(title, text, category, tagsString) {
   clearPromptForm();
 }
 
-// 删除 prompt
+// Delete a prompt
 async function deletePrompt(id) {
   if (!confirm("Delete this prompt?")) {
     return;
@@ -925,7 +925,7 @@ async function deletePrompt(id) {
   renderPromptList();
 }
 
-// 编辑 prompt（in-place 编辑）
+// Edit a prompt in place
 function editPrompt(id) {
   const prompt = promptLibrary.find((p) => p.id === id);
   if (!prompt) return;
@@ -933,16 +933,16 @@ function editPrompt(id) {
   const item = document.querySelector(`[data-prompt-id="${id}"]`);
   if (!item) return;
 
-  // 标记为编辑模式
+  // Mark as editing
   item.classList.add("editing");
 
-  // 编辑表单用到的 datalist options（来自当前 library）
+  // datalist options for the edit form, taken from the current library
   const editDatalistId = `edit-category-datalist-${id}`;
   const categoryOptions = getUniqueSortedCategories()
     .map((cat) => `<option value="${escapeHtml(cat)}">`)
     .join("");
 
-  // 创建编辑表单
+  // Build the edit form
   const form = document.createElement("div");
   form.className = "prompt-edit-form";
   const tagsString = prompt.tags.join(", ");
@@ -981,10 +981,10 @@ function editPrompt(id) {
   item.innerHTML = "";
   item.appendChild(form);
 
-  // 自动聚焦到 title 输入框
+  // Focus the title input
   form.querySelector(".edit-title").focus();
 
-  // 保存编辑事件
+  // Save handler
   form.querySelector(".save-edit-btn").addEventListener("click", async (e) => {
     const newTitle = form.querySelector(".edit-title").value.trim();
     const newCategory = form.querySelector(".edit-category").value.trim();
@@ -1002,7 +1002,7 @@ function editPrompt(id) {
       .map((tag) => tag.trim().toLowerCase())
       .filter((tag) => tag.length > 0);
 
-    // 更新 prompt
+    // Update the prompt
     const promptObj = promptLibrary.find((p) => p.id === id);
     promptObj.title = newTitle;
     promptObj.category = newCategory || "Other";
@@ -1013,13 +1013,13 @@ function editPrompt(id) {
     renderPromptList();
   });
 
-  // 取消编辑事件
+  // Cancel handler
   form.querySelector(".cancel-edit-btn").addEventListener("click", () => {
     renderPromptList();
   });
 }
 
-// 清空 prompt 表单
+// Clear the prompt form
 function clearPromptForm() {
   document.getElementById("prompt-title-input").value = "";
   document.getElementById("prompt-category-input").value = "";
@@ -1027,7 +1027,7 @@ function clearPromptForm() {
   document.getElementById("prompt-textarea").value = "";
 }
 
-// 处理保存新 prompt
+// Handle saving a new prompt
 async function handleSavePrompt() {
   const title = document.getElementById("prompt-title-input").value;
   const category = document.getElementById("prompt-category-input").value;
@@ -1036,7 +1036,7 @@ async function handleSavePrompt() {
   await addPrompt(title, text, category, tags);
 }
 
-// 关闭 Prompt Library 抽屉
+// Close the Prompt Library drawer
 function closePromptDrawer() {
   const drawer = document.getElementById("prompt-drawer");
   drawer.classList.add("hidden");
@@ -1045,11 +1045,11 @@ function closePromptDrawer() {
   activeCategory = "All";
 }
 
-// 搜索/过滤 prompts（搜索 AND 分类双重过滤）
+// Filter prompts by search text AND category
 function filterPrompts(searchQuery) {
   let results = promptLibrary;
 
-  // 按 category chip 过滤
+  // Filter by the selected category chip
   if (activeCategory !== "All") {
     results = results.filter((p) => p.category === activeCategory);
   }
@@ -1066,19 +1066,19 @@ function filterPrompts(searchQuery) {
   });
 }
 
-// 处理搜索输入
+// Handle search input
 function handleSearchPrompts(e) {
   const query = e.target.value;
   renderPromptList(query);
 }
 
-// 所有唯一分类（按字母排序）
+// All unique categories, alphabetically sorted
 function getUniqueSortedCategories() {
   const cats = new Set(promptLibrary.map((p) => p.category || "Other"));
   return Array.from(cats).sort((a, b) => a.localeCompare(b));
 }
 
-// 渲染 category filter chips
+// Render the category filter chips
 function renderCategoryChips() {
   const container = document.getElementById("category-chips");
   if (!container) return;
@@ -1102,7 +1102,7 @@ function renderCategoryChips() {
   });
 }
 
-// 同步 <datalist> 选项，供 category text input 自动补全
+// Sync <datalist> options so the category text input can autocomplete
 function updateCategoryDatalist() {
   const datalist = document.getElementById("category-datalist");
   if (!datalist) return;
@@ -1114,7 +1114,7 @@ function updateCategoryDatalist() {
   });
 }
 
-// 渲染 Prompt 列表
+// Render the prompt list
 function renderPromptList(searchQuery = "") {
   renderCategoryChips();
   updateCategoryDatalist();
@@ -1160,12 +1160,12 @@ function renderPromptList(searchQuery = "") {
       <div class="prompt-item-text">${escapeHtml(prompt.text)}</div>
     `;
 
-    // 复制 prompt 文本到剪贴板
+    // Copy the prompt text to the clipboard
     item.querySelector(".copy-btn").addEventListener("click", async (e) => {
       e.stopPropagation();
       try {
         await navigator.clipboard.writeText(prompt.text);
-        // 临时反馈
+        // Transient feedback
         const btn = e.target;
         const originalText = btn.textContent;
         btn.textContent = "✓";
@@ -1178,13 +1178,13 @@ function renderPromptList(searchQuery = "") {
       }
     });
 
-    // 编辑 prompt
+    // Edit
     item.querySelector(".edit-btn").addEventListener("click", (e) => {
       e.stopPropagation();
       editPrompt(prompt.id);
     });
 
-    // 删除 prompt
+    // Delete
     item.querySelector(".delete-btn").addEventListener("click", (e) => {
       e.stopPropagation();
       deletePrompt(prompt.id);

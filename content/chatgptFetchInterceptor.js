@@ -1,18 +1,21 @@
 // content/chatgptFetchInterceptor.js
 //
-// 运行在 MAIN world（不是 isolated world），目的是能改写页面真正的 window.fetch。
-// ChatGPT 在 DOM 渲染前会 GET /backend-api/conversation/{id} 拿到完整 mapping，
-// 里面包含所有消息（不受虚拟滚动影响）。我们克隆响应、解析、按对话树顺序还原，
-// 然后用 CustomEvent 把结果丢给 isolated world 的 timelineController。
+// Runs in the MAIN world, not the isolated world, so it can replace the page's real
+// window.fetch. Before rendering any DOM, ChatGPT GETs /backend-api/conversation/{id},
+// which returns the full message mapping -- every message, unaffected by virtual scrolling.
+// We clone the response, parse it, rebuild the conversation in tree order, and hand the
+// result to timelineController in the isolated world via a CustomEvent.
 //
-// 约束：
-// - 绝不破坏原始响应，ChatGPT 必须照常拿到 body（所以用 response.clone()）。
-// - 解析失败时静默回退，不影响页面。
-// - 与 isolated world 之间只能传可结构化克隆的数据（字符串/数组/普通对象）。
+// Constraints:
+// - Never disturb the original response: ChatGPT must still receive its body, hence
+//   response.clone().
+// - Fail silently on a parse error rather than breaking the page.
+// - Only structured-cloneable data (strings, arrays, plain objects) can cross into the
+//   isolated world.
 (function () {
   "use strict";
 
-  // 防止重复注入（HMR / 多次执行）覆盖两次 fetch。
+  // Guard against double injection (HMR or a repeated run) wrapping fetch twice.
   if (window.__tlChatgptFetchPatched) return;
   window.__tlChatgptFetchPatched = true;
 
@@ -28,14 +31,14 @@
     } catch (e) {}
   }
 
-  // 最近一次成功解析的结果，用于 replay：
-  // 拦截发生在 document_start，而监听方（isolated world）在 document_idle 才就绪，
-  // 首屏的 conversation fetch 很可能早于监听器注册。监听器就绪后会发一个 request
-  // 事件，我们把缓存的结果重新 dispatch 一次，避免首屏丢数据。
+  // Last successful parse, kept for replay. Interception starts at document_start but the
+  // listener in the isolated world is only ready at document_idle, so the first conversation
+  // fetch usually lands before anyone is listening. Once ready, the listener emits a request
+  // event and we re-dispatch the cached result instead of losing the first screen.
   var cachedDetail = null;
   var lastDispatchedSignature = null;
 
-  // 只拦截 conversation 详情接口，排除 stream_status / textdocs / init 等噪音。
+  // Only intercept the conversation detail endpoint; ignore stream_status, textdocs, init, etc.
   function shouldIntercept(url) {
     if (!url || url.indexOf("/backend-api/conversation/") === -1) return false;
     if (url.indexOf("stream_status") !== -1) return false;
@@ -44,7 +47,7 @@
     return true;
   }
 
-  // fetch 的第一个参数可能是 string / URL / Request。
+  // fetch's first argument may be a string, a URL, or a Request.
   function getUrlString(input) {
     try {
       if (typeof input === "string") return input;
@@ -55,7 +58,7 @@
     return "";
   }
 
-  // 从单个 message node 里抽取纯文本（拼接 content.parts 中的字符串）。
+  // Extract plain text from a single message node by joining the strings in content.parts.
   function extractText(message) {
     var content = message && message.content;
     if (!content) return "";
@@ -69,8 +72,10 @@
     return text.replace(/​/g, "").trim();
   }
 
-  // 按对话树顺序还原消息：从 current_node 沿 parent 一路回溯到根，再反转成时间顺序。
-  // 这样拿到的是「当前激活分支」（regenerate/edit 会产生分支，current_node 指向活跃叶子）。
+  // Rebuild messages in conversation-tree order: walk from current_node up through parent
+  // links to the root, then reverse into chronological order. This yields the currently
+  // active branch -- regenerate and edit create branches, and current_node points at the
+  // live leaf.
   function extractMessages(data) {
     var mapping = data && data.mapping;
     if (!mapping || typeof mapping !== "object") return null;
@@ -81,7 +86,7 @@
       return null;
     }
 
-    // 回溯收集 node id（叶子 -> 根）
+    // Collect node ids while walking up (leaf -> root)
     var chain = [];
     var guard = 0;
     while (nodeId && mapping[nodeId] && guard < 100000) {
@@ -89,7 +94,7 @@
       nodeId = mapping[nodeId].parent;
       guard++;
     }
-    chain.reverse(); // 变成根 -> 叶子（时间顺序）
+    chain.reverse(); // Now root -> leaf, i.e. chronological order
 
     var messages = [];
     for (var i = 0; i < chain.length; i++) {
@@ -99,7 +104,7 @@
 
       var role = message.author.role;
 
-      // 工具调用 / reasoning 等 recipient 不是 all 的助手消息属于噪音，排除。
+      // Assistant messages whose recipient is not "all" (tool calls, reasoning) are noise.
       if (role === "assistant" && message.recipient && message.recipient !== "all") {
         continue;
       }
@@ -107,7 +112,7 @@
       if (role !== "user" && role !== "assistant") continue;
 
       var text = extractText(message);
-      if (!text) continue; // 跳过空消息（含纯图片/纯工具节点）
+      if (!text) continue; // Skip empty messages, including image-only and tool-only nodes
 
       messages.push({ role: role, id: chain[i], text: text });
     }
@@ -123,11 +128,12 @@
 
   function dispatchFetched(detail) {
     try {
-      // 避免完全相同的数据重复 dispatch（同一对话的多次 GET）。
+      // Avoid dispatching identical data twice (the same conversation can be fetched again).
       var signature = detail.conversationId + ":" + detail.messages.length;
       if (signature === lastDispatchedSignature) {
-        // 仍然允许 replay（request 触发时 lastDispatchedSignature 已设过），
-        // 这里只拦截「主动重复」，replay 走 replayCached() 不经过这里。
+        // Replay is still allowed: by the time a request event fires, lastDispatchedSignature
+        // is already set. This guard only suppresses spontaneous duplicates -- replay goes
+        // through replayCached() and does not pass here.
         return;
       }
       lastDispatchedSignature = signature;
@@ -148,7 +154,7 @@
     }
   }
 
-  // 异步处理克隆体，不阻塞返回给 ChatGPT 的原始响应。
+  // Process the clone asynchronously so the original response reaches ChatGPT unblocked.
   function handleResponse(response, url) {
     response
       .clone()
@@ -196,11 +202,11 @@
     } catch (e) {
       log("intercept wrapper threw (ignored)", e);
     }
-    // 永远返回原始 promise，绝不改动 ChatGPT 拿到的响应。
+    // Always return the original promise; never alter what ChatGPT receives.
     return fetchPromise;
   };
 
-  // isolated world 的监听器就绪后会发这个事件，我们把首屏缓存补发一次。
+  // The isolated-world listener emits this once it is ready; replay the cached first screen.
   window.addEventListener(EVENT_REQUEST, replayCached);
 
   log("installed (MAIN world)");

@@ -1,10 +1,12 @@
 import { createLogger } from "../utils/logger.js";
 
 /**
- * Anchor resolver: 把 anchorId 解析成当前活的 DOM 节点。
- * 不滚动、不挂载、不决定 active 状态 —— 滚动与虚拟化挂载由 scrollEngine 负责。
+ * Anchor resolver: turn an anchorId into the DOM node that is live right now.
+ * It does not scroll, does not mount virtualized content, and does not decide the active
+ * state -- scrolling and virtualization mounting belong to scrollEngine.
  *
- * 核心原则：每次都重新查询，永不返回已脱离文档（虚拟化卸载 / 重渲染替换）的缓存节点。
+ * Core rule: re-query every time. Never return a cached node that has been detached from the
+ * document by virtualization or by a re-render.
  */
 export function createAnchorManager() {
   const logger = createLogger("AnchorManager");
@@ -32,21 +34,22 @@ export function createAnchorManager() {
     fallbackMap.set(anchorId, fallbackMeta);
   }
 
-  // anchorId 形如 `tl-anchor-<uuid>-h3` / `tl-anchor-<uuid>-p0`。
-  // uuid 本身含连字符，但后缀 `-h\d+` / `-p\d+` 是无歧义的，可安全剥离。
+  // An anchorId looks like `tl-anchor-<uuid>-h3` or `tl-anchor-<uuid>-p0`.
+  // The uuid contains hyphens itself, but the `-h\d+` / `-p\d+` suffix is unambiguous
+  // and can be stripped safely.
   function deriveMessageId(anchorId) {
     const meta = fallbackMap.get(anchorId);
     if (meta?.sectionId) return meta.sectionId;
     const m = String(anchorId || "").match(/^tl-anchor-(.+)-(?:h\d+|p\d+)$/);
     if (m) return m[1];
-    // 用户消息 anchor 的 id 本身就是 message id（UUID），直接返回。
+    // For a user-message anchor the id is already the message id (a UUID), so return it as is.
     return anchorId || null;
   }
 
   function findSection(sectionId) {
     // getElementById fails when React re-renders because it resets our dynamically-set id.
     // Try data-tl-message-id first (set by upsertUserFromDom / upsertAssistantFromDom),
-    // then data-turn-id (ChatGPT's own JSX attr，虚拟化占位也保留), then data-message-id.
+    // then data-turn-id (ChatGPT's own JSX attr, kept even on virtualized placeholders), then data-message-id.
     return (
       document.getElementById(sectionId) ||
       document.querySelector(`[data-tl-message-id="${CSS.escape(sectionId)}"]`) ||
@@ -83,7 +86,8 @@ export function createAnchorManager() {
       (h) => !h.closest("pre")
     );
     // Prefer text-based match: positional index drifts when React re-renders mid-stream.
-    // 文本对不上（流式半截）时退回 index 兜底；scrollEngine 的 settle 会在文本补全后重定位。
+    // When the text does not match (a half-streamed reply), fall back to the index; the settle
+    // phase in scrollEngine re-locates the target once the text is complete.
     let heading = null;
     if (fallback.headingText) {
       heading = headings.find((h) => h.textContent.trim() === fallback.headingText);
@@ -95,18 +99,19 @@ export function createAnchorManager() {
     return heading;
   }
 
-  // 始终重新查询：永不返回已脱离文档（虚拟化卸载）的缓存节点。
-  // 解析顺序：text-based fallback（最稳） → data-tl-anchor-id → 注入的 id/section → 已连接缓存。
+  // Always re-query: never return a cached node detached by virtualization.
+  // Resolution order: text-based fallback (most robust, since ChatGPT drops the ids we inject)
+  // -> data-tl-anchor-id -> injected id/section -> still-connected cache.
   function getElement(anchorId) {
-    // 1) 文本/结构 fallback 重查（重渲染后最可靠，因为 ChatGPT 会丢掉我们注入的 id）
+    // 1) Re-resolve via the text/structure fallback (most reliable after a re-render)
     const byFallback = resolveFromFallback(anchorId);
     if (byFallback?.isConnected) return byFallback;
 
-    // 2) 我们注入的属性（同一帧内尚未被重渲染清除时命中）
+    // 2) The attribute we injected (hits while the frame has not been re-rendered yet)
     const byAttr = document.querySelector(`[data-tl-anchor-id="${CSS.escape(anchorId)}"]`);
     if (byAttr?.isConnected) return byAttr;
 
-    // 3) anchorId 恰好等于注入的 heading id；或退化到 section
+    // 3) anchorId happens to equal the injected heading id, or degrade to the section
     const directSection = findSection(anchorId);
     if (directSection?.isConnected) {
       anchorMap.set(anchorId, directSection);
@@ -114,7 +119,7 @@ export function createAnchorManager() {
       return directSection;
     }
 
-    // 4) 仅当仍连接时才用缓存
+    // 4) Use the cache only while it is still connected
     const cached = anchorMap.get(anchorId);
     if (cached?.isConnected) return cached;
 

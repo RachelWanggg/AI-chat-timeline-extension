@@ -11,7 +11,7 @@
 <body>
 
   <div id="app">
-    <!-- 标题栏 (header) -->
+    <!-- Header -->
     <header class="panel-header">
       <span class="panel-icon">⏱</span>
       <span class="panel-title">Timeline</span>
@@ -69,7 +69,7 @@
         </div>
       </div>
     </div>
-    <!-- 上下文用量进度条 (context compaction bar) -->
+    <!-- Context usage bar (context compaction indicator) -->
     <div id="context-bar" class="context-bar hidden">
       <div class="context-bar-inner">
         <div id="context-bar-track-wrapper" class="context-bar-track-wrapper">
@@ -88,16 +88,16 @@
       </div>
     </div>
 
-    <!-- Pinned anchors 区域，默认隐藏 -->
+    <!-- Pinned anchors, hidden by default -->
     <div id="pinned-section" class="pinned-section hidden">
       <div class="pinned-header">📌 Pinned</div>
       <div id="pinned-list"></div>
       <hr class="pinned-divider" />
     </div>
 
-    <!-- 时间线主体 (timeline container) -->
+    <!-- Timeline body -->
     <main class="timeline-container" id="timeline-root">
-      <!-- 由 sidepanel.js 动态渲染 -->
+      <!-- Rendered dynamically by sidepanel.js -->
     </main>
 
     <!-- Prompt Library Modal (Pop-up on middle of screen) -->

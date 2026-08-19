@@ -1,4 +1,4 @@
-/* ── 全局重置 (global reset) ── */
+/* ── Global reset ── */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -19,11 +19,11 @@ body {
 #app {
   display: flex;
   flex-direction: column;
-  height: 100vh;            /* ← 关键：撑满整个视口高度 */
-  overflow: hidden;         /* ← 关键：超出部分交给子元素处理 */
+  height: 100vh;            /* Fill the whole viewport height */
+  overflow: hidden;         /* Children own their own scrolling */
 }
 
-/* ── 标题栏 (header) ── */
+/* ── Header ── */
 .panel-header {
   display: flex;
   align-items: center;
@@ -218,12 +218,12 @@ body {
   padding: 12px 0;
 }
 
-/* ── 每一个用户消息块 (conversation turn) ── */
+/* ── One conversation turn ── */
 .turn-block {
   padding: 4px 0;
 }
 
-/* ── 用户问题行 (user anchor row) ── */
+/* ── User question row (user anchor) ── */
 .user-anchor {
   display: flex;
   align-items: flex-start;
@@ -277,7 +277,7 @@ body {
   cursor: default;
 }
 
-/* 左侧圆点指示器 (dot indicator) */
+/* Dot indicator on the left */
 .dot {
   width: 8px;
   height: 8px;
@@ -295,19 +295,19 @@ body {
   word-break: break-word;
 }
 
-/* ── 助手回复块的容器 (assistant anchors wrapper) ── */
+/* ── Assistant anchors wrapper ── */
 .assistant-anchors {
-  padding-left: 24px; /* 缩进，体现层级 */
+  padding-left: 24px; /* Indent to show hierarchy */
   border-left: 1px solid var(--border-color);
-  margin-left: 19px;  /* 与圆点对齐 */
+  margin-left: 19px;  /* Align with the dot indicator */
   margin-bottom: 4px;
 }
 
-/* ── 单个助手回复跳转点 (assistant anchor row) ── */
+/* ── A single assistant anchor row ── */
 .assistant-anchor {
   display: flex;
   align-items: center;
-  justify-content: space-between; /* 左标签，右按钮 */
+  justify-content: space-between; /* Label on the left, button on the right */
   gap: 8px;
   padding: 5px 12px 5px 0;
   cursor: pointer;
@@ -331,7 +331,7 @@ body {
   background: rgba(0,0,0,0.04);
 }
 
-/* 助手跳转点的小方块图标 */
+/* Small square marker on an assistant anchor */
 .dash {
   font-size: 10px;
   color: #888;
@@ -350,11 +350,11 @@ body {
   color: #666;
 }
 
-/* ── 高亮当前位置 (active state) ── */
+/* ── Active state (current position) ── */
 .user-anchor.active {
   background: var(--active, rgba(91,156,246,0.15));
   border-left: 3px solid #5b9cf6;
-  padding-left: 13px; /* 补偿 border-left 占的 3px */
+  padding-left: 13px; /* Compensate for the 3px border-left */
 }
 
 .user-anchor.active .anchor-label {
@@ -369,7 +369,7 @@ body {
   color: var(--text-primary);
 }
 
-/* ── 空状态提示 (empty state) ── */
+/* ── Empty state ── */
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -391,7 +391,7 @@ body {
   line-height: 1.6;
 }
 
-/* ── 滚动条美化 (scrollbar styling) ── */
+/* ── Scrollbar styling ── */
 .timeline-container::-webkit-scrollbar {
   width: 4px;
 }
@@ -545,7 +545,7 @@ body {
   100% { transform: translateY(-50%) scale(1); }
 }
 
-/* Pinned 区域 */
+/* Pinned area */
 .pinned-section {
   margin-bottom: 8px;
 }
@@ -634,7 +634,7 @@ body {
   z-index: 10;
 }
 
-/* Pin 按钮（在 timeline 每个 anchor 旁边） */
+/* Pin button, shown next to every timeline anchor */
 .pin-btn {
   background: none;
   border: none;

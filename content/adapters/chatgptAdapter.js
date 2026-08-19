@@ -73,7 +73,7 @@ export const chatgptAdapter = {
     }
     if (!text) return null;
 
-    // 统一使用 data-message-id 作为唯一标识
+    // Always key off data-message-id as the unique identifier.
     const messageId = resolveMessageId(userNode, "user") || resolveMessageId(turnSection, "user");
     return { text, domId: messageId || null };
   },
@@ -85,7 +85,7 @@ export const chatgptAdapter = {
 
     const container = assistantNode.querySelector?.(".standard-markdown") || assistantNode;
 
-    // 统一使用 data-message-id 作为唯一标识
+    // Always key off data-message-id as the unique identifier.
     const messageId =
       resolveMessageId(assistantNode, "assistant") ||
       resolveMessageId(turnSection, "assistant");
@@ -122,8 +122,8 @@ export const chatgptAdapter = {
         const stableId = `tl-anchor-${messageId}-p0`;
         if (p.id !== stableId) p.id = stableId;
 
-        // 流式输出时段落内容会不断变化，label 跟着变会导致 side panel 不停重渲染/闪烁。
-        // 所以这里“首取一次后冻结”。
+        // While a reply streams in, paragraph text keeps changing. Letting the label follow it
+        // would re-render the side panel on every tick, so freeze the label after the first read.
         const frozenLabel =
           p.dataset.tlAnchorLabel || smartTruncate(text, 40);
         if (!p.dataset.tlAnchorLabel) p.dataset.tlAnchorLabel = frozenLabel;

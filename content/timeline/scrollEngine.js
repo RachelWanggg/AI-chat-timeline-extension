@@ -3,20 +3,30 @@ import { createLogger } from "../utils/logger.js";
 /**
  * Scroll engine: the single authority for moving the page to an anchor.
  *
- * 设计原则（经 chrome-devtools 在真实 ChatGPT / Claude 页面验证）：
- * - 永不使用 element.scrollIntoView()：嵌套滚动容器里它会去滚错祖先，且行为跨浏览器不一致。
- * - 永不使用 window.scroll：两个平台真正的滚动容器都不是 window
- *   （ChatGPT 是 [scrollbar-gutter] 的 overflow:auto div，Claude 是 [scrollbar-gutter:stable] 的 div）。
- * - 滚动容器靠"从目标向上 walk-up 找第一个真正可滚的祖先"推导，不靠 class 名猜。
- * - 用算术 scrollTop 精确定位：top = container.scrollTop + (elTop - containerTop) - offset，
- *   clamp 到 [0, scrollHeight - clientHeight]（杜绝 overscroll）。实测落点误差 0px。
- * - 两阶段：仅当目标被虚拟化卸载时先预定位触发挂载；目标已挂载时保持全程平滑滚动。
- * - rAF 自管 smooth：每帧重新 resolve 目标并推进 scrollTop，避免原生 smooth 被 ChatGPT 重排打断。
+ * Design rules, verified with chrome-devtools against live ChatGPT and Claude pages:
+ * - Never use element.scrollIntoView(). With nested scroll containers it scrolls the wrong
+ *   ancestor, and its behaviour is not consistent across browsers.
+ * - Never use window.scroll. On neither platform is window the real scroll container
+ *   (ChatGPT uses an overflow:auto div with [scrollbar-gutter], Claude a
+ *   [scrollbar-gutter:stable] div).
+ * - Derive the scroll container by walking up from the target to the first genuinely
+ *   scrollable ancestor, rather than guessing from class names.
+ * - Position arithmetically via scrollTop:
+ *     top = container.scrollTop + (elTop - containerTop) - offset
+ *   clamped to [0, scrollHeight - clientHeight] so overscroll is impossible. Measured
+ *   landing error: 0px.
+ * - Two phases, but only when needed: pre-position to force a mount if the target has been
+ *   unmounted by virtualization; if it is already mounted, stay smooth the whole way.
+ * - Self-driven smooth scrolling on rAF: re-resolve the target and advance scrollTop every
+ *   frame, so native smooth scrolling cannot be interrupted by a ChatGPT reflow.
  *
- * 依赖注入：
- * - resolveElement(anchorId): 同步返回当前活的目标元素（每次重查，永不返回脱离文档的缓存）。
- * - locatePlaceholder(anchorId): 目标被虚拟化卸载时，返回它的占位 turn 容器（用于滚入触发挂载）。
- * - getDesiredOffset(): 目标落点距容器顶部的留白（让位 sticky header）。
+ * Injected dependencies:
+ * - resolveElement(anchorId): synchronously return the live target element (re-queried every
+ *   time; never a cached node that has left the document).
+ * - locatePlaceholder(anchorId): when the target is unmounted by virtualization, return its
+ *   placeholder turn container, which can be scrolled into view to trigger the mount.
+ * - getDesiredOffset(): gap between the container top and the landing position, leaving room
+ *   for the sticky header.
  */
 export function createScrollEngine({
   resolveElement,
@@ -25,18 +35,19 @@ export function createScrollEngine({
 } = {}) {
   const logger = createLogger("ScrollEngine");
 
-  const DESIRED_OFFSET_PX = 80;        // 默认落点：容器顶部下方 80px（ChatGPT header 52 / Claude 48 + 留白）
-  const SMOOTH_DISTANCE_FACTOR = 1.0;  // 虚拟化未挂载且距离 > 1 屏时，先预定位触发挂载
-  const SETTLE_TOLERANCE_PX = 4;       // 落点误差容差
-  const SETTLE_STABLE_FRAMES = 4;      // 连续 N 帧达标且布局静止才算 settle
-  const SETTLE_DEADLINE_MS = 1500;     // 校准上限（streaming 仍在涨时兜底退出）
-  const SMOOTH_MIN_MS = 420;           // 自管平滑滚动最短时长
-  const SMOOTH_MAX_MS = 2200;          // 自管平滑滚动最长时长，避免超长对话拖太久
-  const SMOOTH_PX_PER_MS = 3.6;        // 距离 → 时长换算，数值越大滚得越快
-  const MOUNT_POLL_MS = 80;            // 等待虚拟化内容挂载的轮询间隔
-  const MOUNT_TIMEOUT_MS = 1500;       // 等待挂载的最长时间
+  const DESIRED_OFFSET_PX = 80;        // Land 80px below the container top (ChatGPT header 52 / Claude 48, plus slack)
+  const SMOOTH_DISTANCE_FACTOR = 1.0;  // Pre-position first when unmounted and more than one screen away
+  const SETTLE_TOLERANCE_PX = 4;       // Acceptable landing error
+  const SETTLE_STABLE_FRAMES = 4;      // Settled only after N consecutive on-target frames with a static layout
+  const SETTLE_DEADLINE_MS = 1500;     // Calibration cap; bails out while a reply is still streaming
+  const SMOOTH_MIN_MS = 420;           // Shortest self-driven smooth scroll
+  const SMOOTH_MAX_MS = 2200;          // Longest self-driven smooth scroll, so long conversations do not drag
+  const SMOOTH_PX_PER_MS = 3.6;        // Distance-to-duration ratio; higher scrolls faster
+  const MOUNT_POLL_MS = 80;            // Poll interval while waiting for virtualized content to mount
+  const MOUNT_TIMEOUT_MS = 1500;       // Longest wait for a mount
 
-  // 单调递增的跳转令牌：新跳转令旧跳转的所有异步阶段立即作废，避免两个跳转互相打架。
+  // Monotonic jump token: a new jump immediately invalidates every async phase of the
+  // previous one, so two jumps can never fight each other.
   let activeToken = 0;
 
   const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
@@ -47,7 +58,7 @@ export function createScrollEngine({
     return Number.isFinite(v) ? v : DESIRED_OFFSET_PX;
   }
 
-  // ── 滚动容器抽象：兼容"某个 overflow 容器"与"window 滚动"两种世界 ────────────
+  // ── Scroll-container abstraction, covering both an overflow container and window scrolling ──
   function isWindowScroller(c) {
     return c === document.scrollingElement || c === document.documentElement || c === document.body;
   }
@@ -76,10 +87,11 @@ export function createScrollEngine({
   }
 
   /**
-   * 从目标元素向上找真正的滚动容器：
-   * 第一个 overflowY 为 auto/scroll 且 scrollHeight > clientHeight 的祖先即权威容器。
-   * 当前内容不够长（短对话 / streaming 刚开始）时，退化到最近的 overflow:auto 祖先；
-   * 都没有则退化到 document.scrollingElement。
+   * Walk up from the target element to find the real scroll container.
+   * The authoritative container is the first ancestor whose overflowY is auto or scroll and
+   * whose scrollHeight exceeds its clientHeight. When the content is not tall enough yet
+   * (a short conversation, or a reply that just started streaming), fall back to the nearest
+   * overflow:auto ancestor, and finally to document.scrollingElement.
    */
   function findScrollableAncestor(startEl) {
     let el = startEl;
@@ -87,15 +99,16 @@ export function createScrollEngine({
     while (el && el !== document.documentElement && el !== document.body) {
       const cs = getComputedStyle(el);
       if (/(auto|scroll)/.test(cs.overflowY)) {
-        if (el.scrollHeight > el.clientHeight + 4) return el;   // 真正在滚的容器
-        if (!softFallback) softFallback = el;                   // overflow:auto 但当前没溢出
+        if (el.scrollHeight > el.clientHeight + 4) return el;   // Genuinely scrolling
+        if (!softFallback) softFallback = el;                   // overflow:auto but not overflowing yet
       }
       el = el.parentElement;
     }
     return softFallback || document.scrollingElement || document.documentElement;
   }
 
-  // 算术目标 scrollTop（已 clamp）：把元素顶部对齐到容器顶部下方 offset 处。
+  // Arithmetic target scrollTop (already clamped): align the element top to `offset` below
+  // the container top.
   function computeTargetTop(container, el, off) {
     const elTop = el.getBoundingClientRect().top;
     const raw = getScrollTop(container) + (elTop - containerViewportTop(container)) - off;
@@ -114,12 +127,13 @@ export function createScrollEngine({
   }
 
   /**
-   * 确保目标已挂载并可解析。
-   * 目标被虚拟化卸载时：取其占位 turn，用算术 instant 滚入视口触发挂载，轮询直到 resolve 成功。
+   * Ensure the target is mounted and resolvable.
+   * If virtualization unmounted it, take its placeholder turn, scroll it into view with an
+   * arithmetic instant jump to trigger the mount, and poll until resolution succeeds.
    */
-  // 返回 { el, wasVirtualized }：
-  // - wasVirtualized=false：元素首次查询即已挂载，直接用 smooth scroll
-  // - wasVirtualized=true：元素需要等待挂载（虚拟化），需要 Phase 1 instant 预定位
+  // Returns { el, wasVirtualized }:
+  // - wasVirtualized=false: already mounted on the first query, so go straight to smooth scroll
+  // - wasVirtualized=true: had to wait for a mount, so Phase 1 instant pre-positioning ran
   async function ensureResolved(anchorId, token) {
     let el = resolveElement(anchorId);
     if (el?.isConnected) return { el, wasVirtualized: false };
@@ -141,10 +155,12 @@ export function createScrollEngine({
   }
 
   /**
-   * 自管平滑滚动：
-   * 浏览器原生 smooth 在 ChatGPT 虚拟化列表中容易被重排中断，表现为"点一下只滚一段"。
-   * 这里每帧重新 resolve 目标并用缓动曲线推进 scrollTop；目标 remount / streaming 位移时，
-   * 下一帧自然追随新 target，仍然保持平滑，不做可见的 instant 跳跃。
+   * Self-driven smooth scrolling.
+   * Native smooth scrolling is easily interrupted by reflows in ChatGPT's virtualized list,
+   * which shows up as "one click only scrolls part of the way". Instead, re-resolve the
+   * target every frame and advance scrollTop along an easing curve. When the target remounts
+   * or shifts mid-stream, the next frame simply follows the new target -- still smooth, with
+   * no visible instant jump.
    */
   function smoothScrollToAnchor({ token, anchorId, container, off, initialTarget }) {
     return new Promise((resolve) => {
@@ -160,7 +176,7 @@ export function createScrollEngine({
       let segmentDuration = smoothDuration(segmentTarget - segmentStartTop);
 
       const tick = (now) => {
-        if (token !== activeToken) return resolve(false); // 被新跳转作废
+        if (token !== activeToken) return resolve(false); // Superseded by a newer jump
 
         const el =
           resolveElement(anchorId) ||
@@ -209,7 +225,7 @@ export function createScrollEngine({
   }
 
   /**
-   * 滚动到 anchor。返回是否成功（被新跳转作废算失败）。
+   * Scroll to an anchor. Returns whether it succeeded; being superseded counts as a failure.
    */
   async function scrollToAnchor(anchorId) {
     if (!anchorId) return false;
@@ -226,24 +242,26 @@ export function createScrollEngine({
     let el = resolvedEl;
     const container = findScrollableAncestor(el);
 
-    // Phase 1：仅对虚拟化内容（ensureResolved 首次查询未命中）做 instant 预定位，触发 React 挂载。
-    // 已挂载内容直接进 Phase 2 smooth，避免用户感知到"瞬间跳"。
+    // Phase 1: instant pre-positioning only for virtualized content that ensureResolved
+    // missed on its first query, to trigger the React mount. Already-mounted content goes
+    // straight to the Phase 2 smooth scroll so the user never sees a jump.
     let target = computeTargetTop(container, el, off);
     if (wasVirtualized && Math.abs(target - getScrollTop(container)) > viewportHeight(container) * SMOOTH_DISTANCE_FACTOR) {
       setScrollTop(container, target, "auto");
       await raf();
       await raf();
       if (token !== activeToken) return false;
-      el = resolveElement(anchorId) || el; // 可能在挂载中被替换
+      el = resolveElement(anchorId) || el; // May have been replaced while mounting
       if (!el?.isConnected) return false;
       target = computeTargetTop(container, el, off);
     }
 
-    // Phase 2：自管 smooth。全程平滑，同时持续追随 ChatGPT 虚拟化/重排后的真实目标。
+    // Phase 2: self-driven smooth scrolling. Smooth throughout, while continuously following
+    // the real target across ChatGPT's virtualization and reflows.
     return smoothScrollToAnchor({ token, anchorId, container, off, initialTarget: target });
   }
 
-  // 作废当前进行中的跳转（例如对话切换 / 重新解析时）。
+  // Invalidate the jump in flight, e.g. when the conversation changes or we re-parse.
   function cancel() {
     activeToken++;
   }
