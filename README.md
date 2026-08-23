@@ -7,13 +7,13 @@
 A Chrome extension that turns a long ChatGPT or Claude.ai conversation into a navigable
 outline in the browser side panel.
 
+link: https://chromewebstore.google.com/detail/ai-chat-timeline/ekjdciljnpfpolompiflnlglkooabpbg
+
 **What makes it different:** most chat navigators index only your questions. This one also
 parses the `h1`–`h3` headings *inside* each assistant reply, so a 40-message conversation
 becomes a two-level table of contents you can jump around — not just a list of prompts.
 
-![Timeline side panel next to a ChatGPT conversation](docs/images/sidepanel.png)
-
-### Demo
+### Youtube Video
 
 [![Watch the demo](https://img.youtube.com/vi/1KqAzJv59jE/maxresdefault.jpg)](https://youtu.be/1KqAzJv59jE)
 
