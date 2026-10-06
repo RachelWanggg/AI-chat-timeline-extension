@@ -39,3 +39,44 @@ export function buildTimelineFromParsed(parsed) {
 
   return result;
 }
+
+const FENCE_RE = /^\s*(```|~~~)/;
+
+/**
+ * Strip inline markdown so a heading parsed from raw text matches the rendered heading's
+ * textContent: **bold**, _em_, `code`, [link](url), and ~~strike~~.
+ */
+export function stripInlineMarkdown(text) {
+  return String(text || "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/(\*|_)(.+?)\1/g, "$2")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .trim();
+}
+
+/** Extract h1-h3 heading labels from markdown text, skipping fenced code blocks. */
+export function extractHeadingsFromMarkdown(text) {
+  const headings = [];
+  let inFence = false;
+  String(text || "").split("\n").forEach((line) => {
+    if (FENCE_RE.test(line)) { inFence = !inFence; return; }
+    if (inFence) return;
+    const m = line.match(/^\s{0,3}(#{1,3})\s+(.+?)\s*#*\s*$/);
+    if (m) headings.push(stripInlineMarkdown(m[2]));
+  });
+  return headings.filter(Boolean);
+}
+
+/** With no headings, the first meaningful line becomes the label of a single anchor. */
+export function firstParagraphLabel(text) {
+  let inFence = false;
+  for (const line of String(text || "").split("\n")) {
+    if (FENCE_RE.test(line)) { inFence = !inFence; continue; }
+    if (inFence) continue;
+    const t = stripInlineMarkdown(line).replace(/[#>*_`~-]/g, " ").replace(/\s+/g, " ").trim();
+    if (t.length > 10) return t.length > 40 ? t.slice(0, 39) + "…" : t;
+  }
+  return "";
+}

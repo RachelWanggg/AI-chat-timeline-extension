@@ -1,11 +1,16 @@
 import { createLogger } from "../utils/logger.js";
 import { MESSAGE_TYPES } from "../utils/constants.js";
-import { buildTimelineFromParsed } from "./parser.js";
-import { parseClaude } from "../adapters/claudeAdapter.js";
+import {
+  buildTimelineFromParsed,
+  extractHeadingsFromMarkdown,
+  firstParagraphLabel,
+} from "./parser.js";
+import { CLAUDE_SELECTORS } from "../adapters/claudeAdapter.js";
+import { createClaudeTranscript } from "../adapters/claudeTranscript.js";
 import { createAnchorManager } from "./anchorManager.js";
 import { createScrollTracker } from "./scrollTracker.js";
 import { createScrollEngine } from "./scrollEngine.js";
-import { estimateContextStats } from "./tokenEstimator.js";
+import { estimateContextStats, estimateContextStatsFromTexts } from "./tokenEstimator.js";
 
 /**
  * Timeline controller: orchestrate adapter + parser + anchor/scroll modules.
@@ -14,8 +19,15 @@ import { estimateContextStats } from "./tokenEstimator.js";
 export function createTimelineController({ adapter, store }) {
   const logger = createLogger("Timeline");
 
+  const isClaude = adapter.id === "claude";
+  // Claude: the full conversation from its API, mapped onto the virtualized transcript rows.
+  const claudeTranscript = isClaude ? createClaudeTranscript() : null;
+  const CLAUDE_MOUNT_TIMEOUT_MS = 6000; // Jumping far back may need several history pages
+
   // anchorManager: a pure resolver, anchorId -> the live node.
-  const anchorManager = createAnchorManager();
+  const anchorManager = createAnchorManager({
+    findPlatformSection: claudeTranscript ? (id) => claudeTranscript.findSection(id) : null,
+  });
 
   // scrollEngine: the single scrolling authority -- generic container detection, arithmetic
   // positioning, two-phase mounting, rAF calibration, and re-pinning while a reply streams.
@@ -25,6 +37,14 @@ export function createTimelineController({ adapter, store }) {
     resolveElement: (anchorId) => anchorManager.getElement(anchorId),
     locatePlaceholder: (anchorId) =>
       locateSectionByMessageId(anchorManager.deriveMessageId(anchorId)),
+    seekUnmounted: claudeTranscript
+      ? (anchorId) => {
+        const row = document.querySelector(CLAUDE_SELECTORS.row);
+        const container = row ? scrollEngine.findScrollableAncestor(row) : null;
+        return claudeTranscript.seekSection(anchorManager.deriveMessageId(anchorId), container);
+      }
+      : null,
+    mountTimeoutMs: isClaude ? CLAUDE_MOUNT_TIMEOUT_MS : undefined,
   });
 
   let observer = null;
@@ -75,8 +95,11 @@ export function createTimelineController({ adapter, store }) {
   }
 
   function computeContextStats() {
-    const messageEls = adapter.id === "claude"
-      ? document.querySelectorAll('div[data-testid="user-message"], div.font-claude-response')
+    // Claude only mounts a few messages at a time, so prefer the full API transcript.
+    const branch = claudeTranscript?.getBranch();
+    if (branch) return estimateContextStatsFromTexts(branch, adapter.id);
+    const messageEls = isClaude
+      ? document.querySelectorAll(`${CLAUDE_SELECTORS.user}, ${CLAUDE_SELECTORS.assistant}`)
       : document.querySelectorAll("[data-message-author-role]");
     return estimateContextStats(messageEls, adapter.id);
   }
@@ -327,8 +350,7 @@ export function createTimelineController({ adapter, store }) {
   function getConversationScrollContainer() {
     const probe =
       document.querySelector('[data-message-author-role]') ||
-      document.querySelector('div[data-testid="user-message"]') ||
-      document.querySelector("div.font-claude-response");
+      document.querySelector(CLAUDE_SELECTORS.row);
     if (probe) return scrollEngine.findScrollableAncestor(probe);
     return document.scrollingElement || document.documentElement;
   }
@@ -642,34 +664,6 @@ export function createTimelineController({ adapter, store }) {
     return node?.getAttribute?.("data-message-id") || null;
   }
 
-  // Extract h1-h3 headings from an assistant reply's markdown text, skipping ``` code blocks.
-  function extractHeadingsFromMarkdown(text) {
-    const headings = [];
-    let inFence = false;
-    String(text || "").split("\n").forEach((line) => {
-      if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; return; }
-      if (inFence) return;
-      const m = line.match(/^\s{0,3}(#{1,3})\s+(.+?)\s*#*\s*$/);
-      if (m) headings.push(m[2].trim());
-    });
-    return headings;
-  }
-
-  // With no headings, use the first meaningful paragraph as the label of a single anchor,
-  // matching the DOM adapter's behaviour.
-  function firstParagraphLabel(text) {
-    let inFence = false;
-    const lines = String(text || "").split("\n");
-    for (const line of lines) {
-      if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue; }
-      if (inFence) continue;
-      const t = line.replace(/[#>*_`~-]/g, " ").replace(/\s+/g, " ").trim();
-      if (t.length > 10) return t.length > 40 ? t.slice(0, 39) + "…" : t;
-    }
-    return "";
-  }
-
-
   function parseConversation() {
     ensureConversationByPath();
     const appendOnly = messageStore.hasFetchOrder() || scrollLoadComplete;
@@ -677,9 +671,41 @@ export function createTimelineController({ adapter, store }) {
     return buildParsedFromStore();
   }
 
+  let claudeWasStreaming = false;
+
+  // Claude: the API transcript plus any mounted message newer than it. Fetches on a
+  // conversation switch, and refetches once a new message shows up or a reply finishes.
+  function parseClaudeTranscript() {
+    if (claudeTranscript.syncConversation(window.location.pathname)) {
+      claudeWasStreaming = false;
+      claudeTranscript.refresh().then((changed) => {
+        if (changed) reparseNow();
+      });
+    }
+    const isStreaming = Boolean(document.querySelector('[data-is-streaming="true"]'));
+    const { parsed, stale } = claudeTranscript.buildParsed();
+    if (stale || (claudeWasStreaming && !isStreaming)) {
+      claudeTranscript.scheduleRefresh(reparseNow);
+    }
+    claudeWasStreaming = isStreaming;
+    return parsed;
+  }
+
+  // Tag whichever anchors are mounted right now so scrollTracker can observe them. Claude
+  // unmounts offscreen rows, so old tags are dropped first rather than left on recycled nodes.
+  function tagMountedClaudeAnchors(parsed) {
+    document.querySelectorAll("[data-tl-anchor-id]").forEach((el) => {
+      delete el.dataset.tlAnchorId;
+    });
+    parsed.forEach((item) => {
+      if (item.role === "user") anchorManager.getElement(item.id);
+      else (item.anchors || []).forEach((anchor) => anchorManager.getElement(anchor.id));
+    });
+  }
+
   function reparseNow() {
     if (extensionInvalidated) return;
-    const parsed = adapter.id === "claude" ? parseClaude() : parseConversation();
+    const parsed = isClaude ? parseClaudeTranscript() : parseConversation();
     const timelineData = buildTimelineFromParsed(parsed);
     store.setState({ timelineData });
 
@@ -695,6 +721,7 @@ export function createTimelineController({ adapter, store }) {
         });
       }
     });
+    if (isClaude) tagMountedClaudeAnchors(parsed);
 
     emitTimelineUpdate(timelineData);
 
@@ -735,7 +762,7 @@ export function createTimelineController({ adapter, store }) {
       logger.warn("container not found, falling back to body");
     }
 
-    const target = adapter.id === "claude" ? document.body : container || document.body;
+    const target = isClaude ? document.body : container || document.body;
     const debouncedParse = debounce(reparseNow, 800);
     const isChatgpt = adapter.id === "chatgpt";
 
@@ -748,7 +775,8 @@ export function createTimelineController({ adapter, store }) {
         ? true
         : selectors.length === 0
           ? true
-          : hasNewMessage(mutations, selectors);
+          : hasNewMessage(mutations, selectors) ||
+            mutations.some((mutation) => mutation.type === "attributes");
       if (!relevantChange) return;
       debouncedParse();
     });
@@ -757,6 +785,8 @@ export function createTimelineController({ adapter, store }) {
       childList: true,
       subtree: true,
       characterData: isChatgpt,
+      // Claude: a reply finishing flips data-is-streaming, which triggers a refetch.
+      ...(isClaude ? { attributes: true, attributeFilter: ["data-is-streaming"] } : {}),
     });
 
     if (adapter.id === "claude") {

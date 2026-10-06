@@ -86,7 +86,7 @@ function inferRole(el) {
   const role = el.getAttribute?.("data-message-author-role");
   if (role === "user" || role === "assistant") return role;
   if (el.matches?.('div[data-testid="user-message"]')) return "user";
-  if (el.matches?.("div.font-claude-response")) return "assistant";
+  if (el.matches?.('[data-testid="assistant-message"], .font-claude-response')) return "assistant";
   return "message";
 }
 
@@ -109,9 +109,23 @@ function getSafetyMultiplier(density) {
   return 1.15;
 }
 
+// Split markdown into prose and fenced code, mirroring getMessageTextParts for the DOM.
+function getMarkdownTextParts(markdown) {
+  const plain = [];
+  const code = [];
+  let inFence = false;
+  String(markdown || "").split("\n").forEach((line) => {
+    if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; return; }
+    (inFence ? code : plain).push(line);
+  });
+  return { plainText: plain.join("\n"), codeText: code.join("\n") };
+}
+
 export function estimateMessageTokens(el) {
-  const role = inferRole(el);
-  const { plainText, codeText } = getMessageTextParts(el);
+  return estimatePartsTokens(inferRole(el), getMessageTextParts(el));
+}
+
+function estimatePartsTokens(role, { plainText, codeText }) {
   const plainTokens = estimatePlainTextTokens(plainText);
   const codeTokens = estimateCodeTokens(codeText);
   const overhead = role === "assistant" ? 16 : role === "user" ? 12 : 10;
@@ -130,7 +144,18 @@ export function estimateMessageTokens(el) {
 
 export function estimateContextStats(messageEls, platform) {
   const messages = Array.from(messageEls || []).filter(Boolean);
-  const messageStats = messages.map((el) => estimateMessageTokens(el));
+  return summarizeMessageStats(messages.map((el) => estimateMessageTokens(el)), platform);
+}
+
+/** Same estimate from raw message text, e.g. a transcript fetched from the platform's API. */
+export function estimateContextStatsFromTexts(messages, platform) {
+  const messageStats = Array.from(messages || [])
+    .filter((m) => m && typeof m.text === "string")
+    .map((m) => estimatePartsTokens(m.role || "message", getMarkdownTextParts(m.text)));
+  return summarizeMessageStats(messageStats, platform);
+}
+
+function summarizeMessageStats(messageStats, platform) {
   const rawTokens = messageStats.reduce((sum, item) => sum + item.tokens, 0);
   const estimatedChars = messageStats.reduce((sum, item) => sum + item.chars, 0);
   const density = resolveConversationDensity(messageStats);

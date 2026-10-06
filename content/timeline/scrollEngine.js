@@ -25,13 +25,19 @@ import { createLogger } from "../utils/logger.js";
  *   time; never a cached node that has left the document).
  * - locatePlaceholder(anchorId): when the target is unmounted by virtualization, return its
  *   placeholder turn container, which can be scrolled into view to trigger the mount.
+ * - seekUnmounted(anchorId): for lists that remove offscreen rows outright and leave no
+ *   placeholder (Claude), move the scroll container toward the target so it mounts. Called
+ *   once per mount poll; returns whether it moved anything.
  * - getDesiredOffset(): gap between the container top and the landing position, leaving room
  *   for the sticky header.
+ * - mountTimeoutMs: longest wait for a virtualized target to mount.
  */
 export function createScrollEngine({
   resolveElement,
   locatePlaceholder = null,
+  seekUnmounted = null,
   getDesiredOffset = null,
+  mountTimeoutMs = 1500,
 } = {}) {
   const logger = createLogger("ScrollEngine");
 
@@ -44,7 +50,7 @@ export function createScrollEngine({
   const SMOOTH_MAX_MS = 2200;          // Longest self-driven smooth scroll, so long conversations do not drag
   const SMOOTH_PX_PER_MS = 3.6;        // Distance-to-duration ratio; higher scrolls faster
   const MOUNT_POLL_MS = 80;            // Poll interval while waiting for virtualized content to mount
-  const MOUNT_TIMEOUT_MS = 1500;       // Longest wait for a mount
+  const MOUNT_TIMEOUT_MS = mountTimeoutMs; // Longest wait for a mount
 
   // Monotonic jump token: a new jump immediately invalidates every async phase of the
   // previous one, so two jumps can never fight each other.
@@ -146,6 +152,8 @@ export function createScrollEngine({
       if (placeholder?.isConnected) {
         const container = findScrollableAncestor(placeholder);
         setScrollTop(container, computeTargetTop(container, placeholder, offset()), "auto");
+      } else if (typeof seekUnmounted === "function") {
+        seekUnmounted(anchorId);
       }
       await delay(MOUNT_POLL_MS);
       el = resolveElement(anchorId);

@@ -8,7 +8,7 @@ import { createLogger } from "../utils/logger.js";
  * Core rule: re-query every time. Never return a cached node that has been detached from the
  * document by virtualization or by a re-render.
  */
-export function createAnchorManager() {
+export function createAnchorManager({ findPlatformSection = null } = {}) {
   const logger = createLogger("AnchorManager");
   const anchorMap = new Map();
   const fallbackMap = new Map();
@@ -47,6 +47,10 @@ export function createAnchorManager() {
   }
 
   function findSection(sectionId) {
+    // A platform whose sections have no DOM id of their own (Claude) resolves them itself.
+    const platformSection =
+      typeof findPlatformSection === "function" ? findPlatformSection(sectionId) : null;
+    if (platformSection) return platformSection;
     // getElementById fails when React re-renders because it resets our dynamically-set id.
     // Try data-tl-message-id first (set by upsertUserFromDom / upsertAssistantFromDom),
     // then data-turn-id (ChatGPT's own JSX attr, kept even on virtualized placeholders), then data-message-id.
@@ -82,7 +86,7 @@ export function createAnchorManager() {
       return paragraph;
     }
 
-    const headings = Array.from(root.querySelectorAll("h1, h2, h3")).filter(
+    const headings = Array.from(root.querySelectorAll(fallback.headingSelector || "h1, h2, h3")).filter(
       (h) => !h.closest("pre")
     );
     // Prefer text-based match: positional index drifts when React re-renders mid-stream.

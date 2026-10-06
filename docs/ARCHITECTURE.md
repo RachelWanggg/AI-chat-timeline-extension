@@ -90,9 +90,21 @@ content page's CSP blocks a direct call to `api.anthropic.com`.
 
 ## Reading the conversation
 
-**Claude.ai** is read purely from the DOM: `div[data-testid="user-message"]` and
-`div.font-claude-response` are collected, sorted by `compareDocumentPosition`, and headings are
-extracted from `.standard-markdown h1,h2,h3` (excluding anything inside `<pre>`).
+**Claude.ai** virtualizes hard: only a few `[data-testid="transcript-row"]` elements are
+mounted at a time (the rest are replaced by a spacer), and long conversations are paged in from
+the tail, ~32 messages at a time, as you scroll up. So the full conversation comes from the
+same-origin API the page itself uses,
+`/api/organizations/{org}/chat_conversations/{id}?tree=True&rendering_mode=messages`, walked
+from `current_leaf_message_uuid` up through `parent_message_uuid` (`claudeConversationApi.js`).
+Each message is keyed by its branch position (`tl-claude-<pos>`); a mounted row's position is its
+`data-index` plus an offset, derived by matching a human row's `[data-turn-key]` (the message
+uuid) against the API (`claudeTranscript.js`). Headings come from the markdown text; for mounted
+rows they resolve to `.standard-markdown h1,h2,h3` (which skips the hidden "Claude responded:"
+`<h2>`). Messages newer than the last fetch are parsed from the DOM and trigger a refetch, as
+does a reply finishing (`data-is-streaming` flipping to false). If the API is unavailable the
+timeline degrades to mounted messages only. Jumping to an unmounted row uses the scroll engine's
+`seekUnmounted` hook, which estimates its scroll position from the nearest mounted row (or
+scrolls to the top to page in older history) until it mounts.
 
 **ChatGPT** additionally intercepts `fetch`. A `MAIN`-world content script at `document_start`
 wraps `window.fetch` and clones the response to `/backend-api/conversation/{id}`, which

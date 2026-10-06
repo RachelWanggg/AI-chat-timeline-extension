@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildTimelineFromParsed } from "../content/timeline/parser.js";
+import {
+  buildTimelineFromParsed,
+  extractHeadingsFromMarkdown,
+  firstParagraphLabel,
+} from "../content/timeline/parser.js";
 
 const userTurn = (id, text) => ({ id, role: "user", text });
 const assistantTurn = (anchors) => ({ role: "assistant", anchors });
@@ -118,4 +122,14 @@ test("handles a user turn with no text", () => {
   const [turn] = buildTimelineFromParsed([{ id: "u1", role: "user" }]);
 
   assert.equal(turn.userText, "");
+});
+
+test("extractHeadingsFromMarkdown strips inline markdown and skips code fences", () => {
+  const md = "# **Bold** title\n```\n## inside code\n```\n## Use `npm test` and [docs](https://x.y)\n#### too deep";
+  assert.deepEqual(extractHeadingsFromMarkdown(md), ["Bold title", "Use npm test and docs"]);
+});
+
+test("firstParagraphLabel picks the first meaningful line and truncates it", () => {
+  assert.equal(firstParagraphLabel("ok\n\nA reasonably long first paragraph"), "A reasonably long first paragraph");
+  assert.equal(firstParagraphLabel("x".repeat(60)).length, 40);
 });

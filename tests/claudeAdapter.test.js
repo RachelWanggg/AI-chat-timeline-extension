@@ -8,7 +8,12 @@ const userMessage = (text) =>
   `<div data-testid="user-message"><p class="whitespace-pre-wrap">${text}</p></div>`;
 
 const assistantMessage = (inner) =>
-  `<div class="font-claude-response"><div class="standard-markdown">${inner}</div></div>`;
+  `<div data-testid="assistant-message">` +
+  `<h2 class="sr-only">Claude responded: summary</h2>` +
+  `<div class="standard-markdown">${inner}</div></div>`;
+
+const row = (index, inner) =>
+  `<div data-testid="transcript-row" data-index="${index}">${inner}</div>`;
 
 /** Run `fn` against a document built from `html`, then restore the globals. */
 function inDocument(html, fn) {
@@ -121,17 +126,51 @@ test("assigns stable ids derived from position, not a running counter", () => {
   const first = inDocument(html, () => parseClaude().map((item) => item.id));
   const second = inDocument(html, () => parseClaude().map((item) => item.id));
 
-  assert.deepEqual(first, ["tl-user-0", "tl-assistant-0", "tl-user-1"]);
+  assert.deepEqual(first, ["tl-claude-0", "tl-claude-1", "tl-claude-2"]);
   assert.deepEqual(second, first, "ids must not drift across re-parses");
 });
 
-test("writes the generated ids back onto the DOM nodes", () => {
-  inDocument(userMessage("Question") + assistantMessage("<h2>Heading</h2>"), ({ document }) => {
+test("keys virtualized rows by data-index plus the paging offset", () => {
+  inDocument(
+    row(4, userMessage("Later question")) + row(5, assistantMessage("<h2>Answer</h2>")),
+    () => {
+      const parsed = parseClaude({ indexOffset: 10 });
+
+      assert.deepEqual(parsed.map((item) => item.id), ["tl-claude-14", "tl-claude-15"]);
+      assert.equal(parsed[1].anchors[0].id, "tl-anchor-tl-claude-15-h0");
+      assert.equal(parsed[1].anchors[0].fallback.sectionId, "tl-claude-15");
+    }
+  );
+});
+
+test("skips the visually hidden 'Claude responded' heading", () => {
+  inDocument(userMessage("Question") + assistantMessage("<p>Just a plain paragraph answer.</p>"), () => {
     const [, assistant] = parseClaude();
 
-    assert.equal(document.querySelector('[data-testid="user-message"]').id, "tl-user-0");
-    assert.equal(document.getElementById(assistant.anchors[0].id).textContent, "Heading");
+    assert.equal(assistant.anchors.length, 1);
+    assert.match(assistant.anchors[0].label, /^Just a plain paragraph/);
   });
+});
+
+test("still recognises the legacy .font-claude-response wrapper", () => {
+  inDocument(
+    userMessage("Question") +
+      '<div class="font-claude-response"><div class="standard-markdown"><h2>Old</h2></div></div>',
+    () => {
+      assert.deepEqual(parseClaude()[1].anchors.map((a) => a.label), ["Old"]);
+    }
+  );
+});
+
+test("joins every paragraph of a user message and ignores injected buttons", () => {
+  inDocument(
+    '<div data-testid="user-message"><p class="whitespace-pre-wrap">Line one</p>' +
+      '<p class="whitespace-pre-wrap">Line two</p>' +
+      '<div class="tl-msg-actions"><span class="whitespace-pre-wrap">Save</span></div></div>',
+    () => {
+      assert.equal(parseClaude()[0].text, "Line one\nLine two");
+    }
+  );
 });
 
 test("returns an empty result for a page with no conversation", () => {

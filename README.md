@@ -86,7 +86,9 @@ why `scrollEngine` positions arithmetically instead of calling `scrollIntoView()
 │   ├── adapters/
 │   │   ├── adapterFactory.js        # Hostname -> platform adapter
 │   │   ├── chatgptAdapter.js        # ChatGPT DOM parsing
-│   │   └── claudeAdapter.js         # Claude.ai DOM parsing
+│   │   ├── claudeAdapter.js         # Claude.ai DOM parsing
+│   │   ├── claudeConversationApi.js # Claude.ai conversation API (full transcript)
+│   │   └── claudeTranscript.js      # API transcript <-> virtualized rows, seek-to-mount
 │   ├── timeline/
 │   │   ├── parser.js                # Parsed turns -> TimelineTurn[]
 │   │   ├── anchorManager.js         # anchorId -> the live DOM node
