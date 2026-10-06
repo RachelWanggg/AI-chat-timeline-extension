@@ -1,6 +1,6 @@
 {
   "name": "ai-chat-timeline-extension",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Chrome extension that adds structured timeline navigation to ChatGPT and Claude.ai",
   "private": true,
   "type": "module",
