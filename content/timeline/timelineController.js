@@ -10,6 +10,7 @@ import { createClaudeTranscript } from "../adapters/claudeTranscript.js";
 import { createAnchorManager } from "./anchorManager.js";
 import { createScrollTracker } from "./scrollTracker.js";
 import { createScrollEngine } from "./scrollEngine.js";
+import { createChatgptVirtualization } from "./chatgptVirtualization.js";
 import { estimateContextStats, estimateContextStatsFromTexts } from "./tokenEstimator.js";
 
 /**
@@ -20,13 +21,40 @@ export function createTimelineController({ adapter, store }) {
   const logger = createLogger("Timeline");
 
   const isClaude = adapter.id === "claude";
+  const isChatgpt = adapter.id === "chatgpt";
   // Claude: the full conversation from its API, mapped onto the virtualized transcript rows.
   const claudeTranscript = isClaude ? createClaudeTranscript() : null;
   const CLAUDE_MOUNT_TIMEOUT_MS = 6000; // Jumping far back may need several history pages
+  const CHATGPT_MOUNT_TIMEOUT_MS = 8000; // 旧消息可能要等待 ChatGPT 分页并重新挂载
+
+  const chatgptVirtualization = isChatgpt
+    ? createChatgptVirtualization({
+      getOrder: () => messageStore.getOrder(),
+      getTurns: () => {
+        const scope = adapter.containerSelector
+          ? document.querySelector(adapter.containerSelector) || document
+          : document;
+        return collectChatgptTurnElements(scope);
+      },
+      getMessageId: (turn) => getTurnMessageId(turn),
+      getTurnPosition: (turn) => getChatgptTurnIndex(turn),
+      isSearchUnit: (turn) => Boolean(
+        turn?.matches?.(
+          '[data-content-search-unit-key$=":user"], ' +
+          '[data-content-search-unit-key$=":assistant"]'
+        )
+      ),
+      getScrollContainer: (turn) => scrollEngine.findScrollableAncestor(turn),
+    })
+    : null;
 
   // anchorManager: a pure resolver, anchorId -> the live node.
   const anchorManager = createAnchorManager({
-    findPlatformSection: claudeTranscript ? (id) => claudeTranscript.findSection(id) : null,
+    findPlatformSection: claudeTranscript
+      ? (id) => claudeTranscript.findSection(id)
+      : chatgptVirtualization
+        ? (id) => chatgptVirtualization.findMounted(id)
+        : null,
   });
 
   // scrollEngine: the single scrolling authority -- generic container detection, arithmetic
@@ -43,8 +71,16 @@ export function createTimelineController({ adapter, store }) {
         const container = row ? scrollEngine.findScrollableAncestor(row) : null;
         return claudeTranscript.seekSection(anchorManager.deriveMessageId(anchorId), container);
       }
-      : null,
-    mountTimeoutMs: isClaude ? CLAUDE_MOUNT_TIMEOUT_MS : undefined,
+      : chatgptVirtualization
+        ? (anchorId) => chatgptVirtualization.seekMessage(
+          anchorManager.deriveMessageId(anchorId)
+        )
+        : null,
+    mountTimeoutMs: isClaude
+      ? CLAUDE_MOUNT_TIMEOUT_MS
+      : isChatgpt
+        ? CHATGPT_MOUNT_TIMEOUT_MS
+        : undefined,
   });
 
   let observer = null;
@@ -98,9 +134,16 @@ export function createTimelineController({ adapter, store }) {
     // Claude only mounts a few messages at a time, so prefer the full API transcript.
     const branch = claudeTranscript?.getBranch();
     if (branch) return estimateContextStatsFromTexts(branch, adapter.id);
+    if (!isClaude && messageStore.hasFetchOrder()) {
+      const messages = messageStore
+        .getOrder()
+        .map((id) => messageStore.state.messages.get(id))
+        .filter((message) => message?.text);
+      return estimateContextStatsFromTexts(messages, adapter.id);
+    }
     const messageEls = isClaude
       ? document.querySelectorAll(`${CLAUDE_SELECTORS.user}, ${CLAUDE_SELECTORS.assistant}`)
-      : document.querySelectorAll("[data-message-author-role]");
+      : document.querySelectorAll(adapter.turnSelector || "[data-message-author-role]");
     return estimateContextStats(messageEls, adapter.id);
   }
 
@@ -349,7 +392,7 @@ export function createTimelineController({ adapter, store }) {
   // such as the sidebar.
   function getConversationScrollContainer() {
     const probe =
-      document.querySelector('[data-message-author-role]') ||
+      document.querySelector(adapter.turnSelector || "[data-message-author-role]") ||
       document.querySelector(CLAUDE_SELECTORS.row);
     if (probe) return scrollEngine.findScrollableAncestor(probe);
     return document.scrollingElement || document.documentElement;
@@ -504,7 +547,10 @@ export function createTimelineController({ adapter, store }) {
   function getChatgptTurnIndex(el) {
     const testid = el?.getAttribute?.("data-testid") || "";
     const match = testid.match(/conversation-turn-(\d+)/);
-    return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+    if (match) return Number(match[1]);
+    const searchUnitKey = el?.getAttribute?.("data-content-search-unit-key") || "";
+    const searchMatch = searchUnitKey.match(/fallback-turn-(\d+):/);
+    return searchMatch ? Number(searchMatch[1]) : Number.POSITIVE_INFINITY;
   }
 
   function collectChatgptTurnElements(scope) {
@@ -526,41 +572,12 @@ export function createTimelineController({ adapter, store }) {
   // section that anchorManager can scroll into view to trigger the mount.
   function locateSectionByMessageId(messageId) {
     if (!messageId) return null;
-    if (adapter.id !== "chatgpt") {
+    if (!isChatgpt) {
       // Other platforms: find the nearest turn container from the mounted message node.
       const mounted = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
       return mounted?.closest?.(adapter.turnSelector || "*") || mounted || null;
     }
-
-    // 1) Mounted: walk up from the real message node to its section (most accurate).
-    const mounted = document.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
-    if (mounted) return mounted.closest(adapter.turnSelector) || mounted;
-
-    // 2) Virtualized: map the conversation-order index onto conversation-turn-{n}
-    //    (the testid is contiguous and 1-based).
-    const order = messageStore.getOrder();
-    const idx = order.indexOf(messageId);
-    if (idx < 0) {
-      logger.warn("locateSectionByMessageId: id not in order, cannot locate placeholder", messageId);
-      return null;
-    }
-
-    const scope = adapter.containerSelector
-      ? document.querySelector(adapter.containerSelector) || document
-      : document;
-    const turns = collectChatgptTurnElements(scope);
-
-    // Prefer an exact testid match (index + 1); otherwise fall back to the idx-th in DOM order.
-    const byTestid = turns.find((t) => getChatgptTurnIndex(t) === idx + 1);
-    if (byTestid) return byTestid;
-
-    if (turns[idx]) {
-      logger.debug("locateSectionByMessageId: matched by positional index", idx, "for", messageId);
-      return turns[idx];
-    }
-
-    logger.warn("locateSectionByMessageId: no section found for", messageId, "idx", idx);
-    return null;
+    return chatgptVirtualization?.locatePlaceholder(messageId) || null;
   }
 
   function getFallbackText(node) {
@@ -579,7 +596,8 @@ export function createTimelineController({ adapter, store }) {
           headingIndex: idx,
           headingText: label,
           isParagraph: false,
-          containerSelector: '[data-message-author-role="assistant"]',
+          containerSelector:
+            adapter.assistantContainerSelector || '[data-message-author-role="assistant"]',
         },
       }));
     }
@@ -593,7 +611,8 @@ export function createTimelineController({ adapter, store }) {
         sectionId: messageId,
         headingIndex: 0,
         isParagraph: true,
-        containerSelector: '[data-message-author-role="assistant"]',
+        containerSelector:
+          adapter.assistantContainerSelector || '[data-message-author-role="assistant"]',
       },
     }];
   }
@@ -644,6 +663,9 @@ export function createTimelineController({ adapter, store }) {
       });
 
       messageStore.setOrder(order);
+      // Drop DOM-only fallback ids from an earlier pre-fetch parse. The next parse remaps
+      // mounted search units onto the authoritative API ids before appending live extras.
+      messageStore.setDomOrder([]);
       logger.debug(
         `[FetchInterceptor] ingested ${messages.length} messages ` +
         `(${order.length} turns in order)`
@@ -654,8 +676,30 @@ export function createTimelineController({ adapter, store }) {
     }
   }
 
-  // The id on a [data-message-id] node inside a turn -- the same identifier space as the API's node id.
+  function findFetchedUserBefore(assistantId) {
+    if (!assistantId) return null;
+    const order = messageStore.state.order;
+    const assistantIndex = order.indexOf(assistantId);
+    if (assistantIndex < 0) return null;
+    for (let index = assistantIndex - 1; index >= 0; index--) {
+      const message = messageStore.state.messages.get(order[index]);
+      if (message?.role === "user") return message.id;
+    }
+    return null;
+  }
+
+  // Resolve both the legacy data-message-id DOM and ChatGPT's current search-unit DOM.
+  // Current user units do not expose their own UUID, so pair them with the assistant unit from
+  // the same rendered turn and map that assistant back to the preceding fetched user message.
   function getTurnMessageId(turn) {
+    if (adapter.id === "chatgpt" && adapter.isUserTurn(turn) && messageStore.hasFetchOrder()) {
+      const assistantId = adapter.getPairedAssistantMessageId?.(turn);
+      const fetchedUserId = findFetchedUserBefore(assistantId);
+      if (fetchedUserId) return fetchedUserId;
+    }
+
+    const adapterId = adapter.getMessageId?.(turn);
+    if (adapterId) return adapterId;
     const node = turn?.querySelector?.(
       '[data-message-id][data-message-author-role="user"], ' +
       '[data-message-id][data-message-author-role="assistant"], ' +

@@ -2,6 +2,12 @@ import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("Adapter.ChatGPT");
 
+const LEGACY_TURN_SELECTOR = 'section[data-testid^="conversation-turn"]';
+const SEARCH_UNIT_SELECTOR =
+  '[data-content-search-unit-key$=":user"], ' +
+  '[data-content-search-unit-key$=":assistant"]';
+const TURN_SELECTOR = `${LEGACY_TURN_SELECTOR}, ${SEARCH_UNIT_SELECTOR}`;
+
 function normalizeText(text) {
   return String(text || "")
     .replace(/\u200b/g, "")
@@ -11,20 +17,58 @@ function normalizeText(text) {
 
 function resolveUserNode(el) {
   if (!el) return null;
+  if (el.matches?.('[data-content-search-unit-key$=":user"]')) {
+    return el.querySelector?.("[data-user-message-bubble]") || el;
+  }
   if (el.matches?.('[data-message-author-role="user"]')) return el;
-  return el.querySelector?.('[data-message-author-role="user"]') || el;
+  return (
+    el.querySelector?.("[data-user-message-bubble]") ||
+    el.querySelector?.('[data-message-author-role="user"]') ||
+    el
+  );
 }
 
 function resolveAssistantNode(el) {
   if (!el) return null;
+  if (el.matches?.('[data-content-search-unit-key$=":assistant"]')) return el;
   if (el.matches?.('[data-message-author-role="assistant"]')) return el;
   return el.querySelector?.('[data-message-author-role="assistant"]') || el;
 }
 
 function resolveTurnSection(el) {
   if (!el) return null;
-  if (el.matches?.('section[data-testid^="conversation-turn"]')) return el;
-  return el.closest?.('section[data-testid^="conversation-turn"]') || el;
+  if (el.matches?.(TURN_SELECTOR)) return el;
+  return el.closest?.(TURN_SELECTOR) || el;
+}
+
+function getSearchUnitMessageId(el) {
+  const turn = resolveTurnSection(el);
+  const ids = turn?.getAttribute?.("data-chatgpt-search-message-ids") || "";
+  return ids.split(/\s+/).find(Boolean) || null;
+}
+
+function getSearchUnitFallbackId(el) {
+  const turn = resolveTurnSection(el);
+  const key = turn?.getAttribute?.("data-content-search-unit-key");
+  if (!key) return null;
+  const safeKey = key.replace(/[^a-zA-Z0-9_-]+/g, "-");
+  return `tl-chatgpt-${safeKey}`;
+}
+
+function getPairedAssistantMessageId(el) {
+  const turn = resolveTurnSection(el);
+  const key = turn?.getAttribute?.("data-content-search-unit-key") || "";
+  const match = key.match(/^(.*):\d+:user$/);
+  if (!match) return null;
+
+  const doc = turn.ownerDocument || document;
+  const assistant = Array.from(
+    doc.querySelectorAll('[data-content-search-unit-key$=":assistant"]')
+  ).find((candidate) => {
+    const candidateKey = candidate.getAttribute("data-content-search-unit-key") || "";
+    return candidateKey.startsWith(`${match[1]}:`);
+  });
+  return getSearchUnitMessageId(assistant);
 }
 
 function resolveMessageId(el, role) {
@@ -34,7 +78,9 @@ function resolveMessageId(el, role) {
     : "[data-message-id]";
   if (el.matches?.(roleSelector)) return el.getAttribute?.("data-message-id") || null;
   const node = el.querySelector?.(roleSelector) || el.querySelector?.("[data-message-id]");
-  return node?.getAttribute?.("data-message-id") || null;
+  const legacyId = node?.getAttribute?.("data-message-id") || null;
+  if (legacyId) return legacyId;
+  return getSearchUnitMessageId(el) || getSearchUnitFallbackId(el);
 }
 
 function smartTruncate(text, maxLength) {
@@ -47,16 +93,28 @@ function smartTruncate(text, maxLength) {
 
 export const chatgptAdapter = {
   id: "chatgpt",
-  turnSelector: 'section[data-testid^="conversation-turn"]',
+  turnSelector: TURN_SELECTOR,
   containerSelector: "main",
-  messageSelectors: ['section[data-testid^="conversation-turn"]'],
+  assistantContainerSelector:
+    '[data-message-author-role="assistant"], ' +
+    '[data-content-search-unit-key$=":assistant"]',
+  messageSelectors: [LEGACY_TURN_SELECTOR, SEARCH_UNIT_SELECTOR],
 
   isUserTurn(el) {
     const turnSection = resolveTurnSection(el);
     return (
+      turnSection?.getAttribute("data-content-search-unit-key")?.endsWith(":user") ||
       turnSection?.getAttribute("data-turn") === "user" ||
       Boolean(turnSection?.querySelector?.('[data-message-author-role="user"]'))
     );
+  },
+
+  getMessageId(el, role) {
+    return resolveMessageId(resolveTurnSection(el), role);
+  },
+
+  getPairedAssistantMessageId(el) {
+    return getPairedAssistantMessageId(el);
   },
 
   extractUserText(el) {
@@ -109,7 +167,9 @@ export const chatgptAdapter = {
             headingIndex: idx,
             headingText: label,
             isParagraph: false,
-            containerSelector: '[data-message-author-role="assistant"]',
+            containerSelector:
+              '[data-message-author-role="assistant"], ' +
+              '[data-content-search-unit-key$=":assistant"]',
           },
         };
       });
@@ -136,7 +196,9 @@ export const chatgptAdapter = {
             sectionId: messageId,
             headingIndex: 0,
             isParagraph: true,
-            containerSelector: '[data-message-author-role="assistant"]',
+            containerSelector:
+              '[data-message-author-role="assistant"], ' +
+              '[data-content-search-unit-key$=":assistant"]',
           },
         }];
       }
@@ -162,6 +224,8 @@ export const chatgptAdapter = {
   },
 
   getUserMessageNodes() {
+    const searchUnitNodes = Array.from(document.querySelectorAll("[data-user-message-bubble]"));
+    if (searchUnitNodes.length > 0) return searchUnitNodes;
     const authorRoleNodes = Array.from(
       document.querySelectorAll('[data-message-author-role="user"]')
     );

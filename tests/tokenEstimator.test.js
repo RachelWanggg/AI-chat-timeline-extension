@@ -12,6 +12,18 @@ test("infers the role from ChatGPT's author-role attribute", () => {
   assert.equal(estimateMessageTokens(assistant).role, "assistant");
 });
 
+test("infers roles from current ChatGPT search-unit messages", () => {
+  const user = makeElement(
+    '<div data-content-search-unit-key="fallback-turn-2:0:user">hello</div>'
+  );
+  const assistant = makeElement(
+    '<div data-content-search-unit-key="fallback-turn-2:1:assistant">hello</div>'
+  );
+
+  assert.equal(estimateMessageTokens(user).role, "user");
+  assert.equal(estimateMessageTokens(assistant).role, "assistant");
+});
+
 test("infers the role from the Claude selectors", () => {
   const user = makeElement('<div data-testid="user-message">hello</div>');
   const assistant = makeElement('<div class="font-claude-response">hello</div>');

@@ -1,4 +1,5 @@
 import { createLogger } from "../utils/logger.js";
+import { clampScrollTop, getElementScrollBounds } from "./scrollGeometry.js";
 
 /**
  * Scroll engine: the single authority for moving the page to an anchor.
@@ -13,7 +14,8 @@ import { createLogger } from "../utils/logger.js";
  *   scrollable ancestor, rather than guessing from class names.
  * - Position arithmetically via scrollTop:
  *     top = container.scrollTop + (elTop - containerTop) - offset
- *   clamped to [0, scrollHeight - clientHeight] so overscroll is impossible. Measured
+ *   clamped to the container's real range. Normal containers use [0, max]; a
+ *   column-reverse container (current ChatGPT) uses [-max, 0]. Measured
  *   landing error: 0px.
  * - Two phases, but only when needed: pre-position to force a mount if the target has been
  *   unmounted by virtualization; if it is already mounted, stay smooth the whole way.
@@ -81,10 +83,14 @@ export function createScrollEngine({
     return isWindowScroller(c) ? window.innerHeight : c.clientHeight;
   }
 
-  function maxScrollTop(c) {
-    return isWindowScroller(c)
-      ? Math.max(0, document.documentElement.scrollHeight - window.innerHeight)
-      : Math.max(0, c.scrollHeight - c.clientHeight);
+  function scrollBounds(c) {
+    if (isWindowScroller(c)) {
+      return {
+        min: 0,
+        max: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+      };
+    }
+    return getElementScrollBounds(c);
   }
 
   function setScrollTop(c, top, behavior) {
@@ -118,7 +124,7 @@ export function createScrollEngine({
   function computeTargetTop(container, el, off) {
     const elTop = el.getBoundingClientRect().top;
     const raw = getScrollTop(container) + (elTop - containerViewportTop(container)) - off;
-    return Math.max(0, Math.min(raw, maxScrollTop(container)));
+    return clampScrollTop(raw, scrollBounds(container));
   }
 
   function easeInOutCubic(t) {

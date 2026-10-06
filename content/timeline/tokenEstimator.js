@@ -85,6 +85,9 @@ function getMessageTextParts(el) {
 function inferRole(el) {
   const role = el.getAttribute?.("data-message-author-role");
   if (role === "user" || role === "assistant") return role;
+  const searchUnitKey = el.getAttribute?.("data-content-search-unit-key") || "";
+  if (searchUnitKey.endsWith(":user")) return "user";
+  if (searchUnitKey.endsWith(":assistant")) return "assistant";
   if (el.matches?.('div[data-testid="user-message"]')) return "user";
   if (el.matches?.('[data-testid="assistant-message"], .font-claude-response')) return "assistant";
   return "message";
