@@ -6,7 +6,9 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "test": "node --test \"tests/**/*.test.js\""
+    "test": "node --test \"tests/**/*.test.js\"",
+    "webstore:status": "node scripts/upload-webstore.mjs --status",
+    "webstore:upload": "node scripts/upload-webstore.mjs"
   },
   "devDependencies": {
     "jsdom": "^26.1.0"

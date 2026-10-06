@@ -122,6 +122,19 @@ npm test
 revise prompt builder, adapter resolution, and Claude DOM parsing under jsdom. They run on
 every push and pull request via GitHub Actions.
 
+## Chrome Web Store upload
+
+OAuth credentials are stored outside the repository in
+`~/.config/ai-chat-timeline-extension/`. The upload command builds a ZIP from runtime files,
+refreshes the OAuth access token, and uploads a new draft:
+
+```bash
+npm run webstore:status
+npm run webstore:upload
+```
+
+The command intentionally does not submit the draft for review or publish it.
+
 ---
 
 ## Known limitations
